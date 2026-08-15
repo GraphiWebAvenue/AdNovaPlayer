@@ -80,6 +80,14 @@ class Agent:
         self._operating_hours: dict | None = None
         self._timezone = "UTC"
 
+        # Whether the last heartbeat reached Dashboard, for the admin page.
+        self._last_contact_ok = False
+
+        # Monotonic timestamps the loops bump on each pass, read by the
+        # watchdog to decide whether the process still deserves to live.
+        self._fetch_alive = _mono()
+        self._heartbeat_alive = _mono()
+
         self._boot = datetime.now(tz=UTC)
 
     # ── The plan the server reads ────────────────────────────────────────
@@ -167,6 +175,7 @@ class Agent:
     def _fetch_loop(self) -> None:
         while not self._stop.is_set():
             interval = self._safe(self._fetch_once, default=self._config.manifest_poll_seconds)
+            self._fetch_alive = _mono()
             self._stop.wait(max(30, interval))
 
     def _fetch_once(self) -> int:
@@ -241,7 +250,64 @@ class Agent:
             self._safe(self._heartbeat_once, default=None)
             self._safe(self._upload_playback, default=None)
             self._safe(self._apply_screen_power, default=None)
+            self._heartbeat_alive = _mono()
             self._stop.wait(max(15, self._config.heartbeat_seconds))
+
+    def status(self) -> dict:
+        """A snapshot for the on-site admin page. Read-only, cheap."""
+        health = read_health(self._config.cache_dir, self._cache.used_bytes())
+        with self._lock:
+            current = self._current
+            version = self._schedule.schedule_version
+        return {
+            "stand_id": self._config.stand_id,
+            "player_version": _version(),
+            "schedule_version": version,
+            "now_playing": (current.label or f"slot {current.slot_id}")
+            if current and not current.is_fallback else None,
+            "online": self._last_contact_ok,
+            "temp_c": health.temp_c,
+            "disk_free_mb": (health.disk_free_bytes // (1024 * 1024))
+            if health.disk_free_bytes is not None else None,
+            "pending_logs": self._playback.pending(),
+            "warnings": health.warnings,
+        }
+
+    def trigger(self, action: str) -> bool:
+        """Run an operation the admin page asked for. Returns acceptance."""
+        if action == "refetch":
+            self._safe(self._fetch_once, default=self._config.manifest_poll_seconds)
+            return True
+        if action == "update":
+            # The update runs from a privileged timer; the page only nudges
+            # it. Returning True means "asked", not "done" — the page polls
+            # status to see the result.
+            import subprocess
+
+            subprocess.Popen(  # noqa: S603,S607 — fixed unit name
+                ["systemctl", "start", "adnova-update.service"],
+            )
+            return True
+        return False
+
+    def is_live(self) -> bool:
+        """
+        Have both loops made progress recently?
+
+        The watchdog reads this. "Recently" is generous — several times the
+        slowest interval — so a slow network never looks like a hang, but a
+        thread wedged for minutes does. A loop that is merely waiting on its
+        timer still counts as live, because it stamps at the top of each
+        pass before it sleeps.
+        """
+        deadline = _mono() - self._liveness_window()
+        return self._fetch_alive > deadline and self._heartbeat_alive > deadline
+
+    def _liveness_window(self) -> float:
+        # Three of the longest interval, floored so a fast config still
+        # tolerates one slow cycle.
+        longest = max(self._config.manifest_poll_seconds, self._config.heartbeat_seconds)
+        return max(180.0, longest * 3)
 
     def _apply_screen_power(self) -> None:
         """
@@ -267,6 +333,7 @@ class Agent:
     def _heartbeat_once(self) -> None:
         body = self._heartbeat_body()
         response = self._api.send_heartbeat(body)
+        self._last_contact_ok = response is not None
         if response is None:
             return
 
@@ -411,3 +478,9 @@ def _version() -> str:
     from . import __version__
 
     return __version__
+
+
+def _mono() -> float:
+    import time
+
+    return time.monotonic()

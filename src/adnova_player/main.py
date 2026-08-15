@@ -53,6 +53,12 @@ def build(config: Config) -> tuple[Agent, object]:
         current_schedule=agent.schedule,
         on_playing=agent.on_playing,
     )
+
+    # The on-site status page, behind the admin login.
+    from .admin import attach_admin
+
+    attach_admin(app, config, status=agent.status, on_action=agent.trigger)
+
     return agent, app
 
 
@@ -77,10 +83,20 @@ def main() -> int:
     agent, app = build(config)
     agent.start()
 
+    # Tell systemd we are up, then feed its watchdog only while the loops
+    # are genuinely making progress — see watchdog.py for why an
+    # unconditional ping would be worse than none.
+    from .watchdog import Watchdog, ready
+
+    ready()
+    watchdog = Watchdog(is_live=agent.is_live)
+    watchdog.start()
+
     # A clean stop on SIGTERM (systemd stop / restart) so the last plan and
     # playback log are flushed rather than torn.
     def _shutdown(_signum, _frame):
         log.info("Shutting down.")
+        watchdog.stop()
         agent.stop()
 
     signal.signal(signal.SIGTERM, _shutdown)

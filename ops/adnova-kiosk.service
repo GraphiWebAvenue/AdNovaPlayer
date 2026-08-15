@@ -1,0 +1,28 @@
+[Unit]
+Description=AdNova Kiosk — full-screen browser for the player
+# The browser is useless before the player answers, and pointless before a
+# graphical session exists. Wait for both.
+After=adnova-player.service graphical.target
+Wants=adnova-player.service
+PartOf=graphical.target
+
+[Service]
+Type=simple
+User=adnova
+Group=adnova
+
+# The Wayland session the compositor exposes. On Raspberry Pi OS Bookworm
+# the desktop autologins as this user and labwc provides the socket; these
+# tell Chromium where to draw.
+Environment=WAYLAND_DISPLAY=wayland-1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=ADNOVA_KIOSK_URL=http://127.0.0.1:8080/
+
+ExecStart=/opt/adnova-player/current/ops/adnova-kiosk.sh
+
+# A crashed browser is a two-second flash, not a dead screen.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target

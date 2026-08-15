@@ -1,0 +1,11 @@
+[Unit]
+Description=AdNova Player self-update (from the signed git channel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root because it restarts the service and writes under /opt; it
+# does nothing else, and its only input is a git fetch of a repo we
+# control. See adnova-update.sh for the rollback-on-failure guard.
+ExecStart=/opt/adnova-player/current/ops/adnova-update.sh

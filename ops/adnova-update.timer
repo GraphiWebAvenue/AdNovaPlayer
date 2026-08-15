@@ -1,0 +1,14 @@
+[Unit]
+Description=Check for AdNova Player updates a few times a day
+
+[Timer]
+# Every six hours, with a randomised delay so a fleet does not all pull at
+# the same minute and hammer the origin. Persistent so a device that was
+# off catches up on its next boot rather than skipping the window.
+OnBootSec=10min
+OnUnitActiveSec=6h
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

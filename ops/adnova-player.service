@@ -1,0 +1,67 @@
+[Unit]
+Description=AdNova Player — plays this stand's schedule
+Documentation=https://github.com/GraphiWebAvenue/AdNovaPlayer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# notify, not exec: the player sends READY=1 once its loops are running,
+# so systemd knows the difference between "process started" and "actually
+# playing", and the watchdog protocol below is active.
+Type=notify
+User=adnova
+Group=adnova
+
+# The stand id, key and trusted signing keys. Root-owned, mode 0600 — a
+# leaked key exposes exactly this one screen and nothing else.
+EnvironmentFile=/etc/adnova-player/env
+
+# The kiosk browser needs a session bus and a display. Wayland on the
+# Pi's default (labwc) exposes both here; the launcher script starts the
+# compositor and Chromium, this service is the brain behind them.
+Environment=PYTHONUNBUFFERED=1
+
+WorkingDirectory=/opt/adnova-player/current
+ExecStart=/opt/adnova-player/venv/bin/python -m adnova_player.main
+
+# The heart of "never a dark screen for long": if the process dies for any
+# reason, systemd brings it straight back, backing off only enough to
+# avoid a tight crash-spin.
+Restart=always
+RestartSec=3
+StartLimitIntervalSec=0
+
+# ── systemd software watchdog ───────────────────────────────────────────
+#
+# The player pings systemd on a timer (sd_notify WATCHDOG=1). If it stops
+# pinging — a deadlock, a wedged thread — systemd kills and restarts it
+# even though the process is technically still alive. This catches the
+# hangs that Restart=always alone cannot.
+#
+# The hardware watchdog (/dev/watchdog, enabled in the installer) sits
+# under this: if systemd ITSELF wedges, the Pi's silicon reboots the whole
+# board. Two nets, one under the other.
+WatchdogSec=60
+NotifyAccess=main
+
+# ── Resource bounds ─────────────────────────────────────────────────────
+#
+# The brain is light; the browser is the heavy part and runs in its own
+# session. This keeps a runaway in the Python side from taking the board
+# down.
+MemoryMax=256M
+TasksMax=64
+
+# ── Hardening ───────────────────────────────────────────────────────────
+NoNewPrivileges=true
+ProtectSystem=strict
+# The one place it may write: the media cache and logs.
+ReadWritePaths=/var/lib/adnova-player
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

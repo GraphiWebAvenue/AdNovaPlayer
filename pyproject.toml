@@ -33,4 +33,6 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+# B008: FastAPI's Depends()/Security() in a parameter default is the
+# framework's documented idiom, not the bug the rule is about.
+ignore = ["E501", "B008"]
