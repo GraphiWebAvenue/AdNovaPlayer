@@ -105,6 +105,12 @@ def verify(
     out, and it is logged every single time so it cannot quietly become
     permanent.
     """
+    # A manifest is a JSON object. A bare list or string parses fine but
+    # has no `.get`, and reaching one here would raise AttributeError —
+    # outside the "returns a Verdict" contract every caller relies on.
+    if not isinstance(manifest, dict):
+        return Verdict(False, "Manifest is not an object.")
+
     signature = manifest.get("signature")
 
     if not isinstance(signature, dict):

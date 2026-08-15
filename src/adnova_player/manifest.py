@@ -131,6 +131,7 @@ class Manifest:
         *,
         public_keys: dict[str, str] | None = None,
         stand_id: int | None = None,
+        min_schedule_version: int | None = None,
         require_signature: bool = True,
     ) -> Manifest:
         """
@@ -148,7 +149,21 @@ class Manifest:
         Passing `public_keys=None` skips the check entirely. That is for
         tests and for the pre-signing fleet — a device in the field is
         configured with its keys and never reaches this path.
+
+        `min_schedule_version`, when given, is the version already held.
+        A correctly-signed but *older* manifest is refused: an attacker who
+        can replay traffic could otherwise serve a captured earlier plan
+        over a newer one, quietly rolling the screen back to yesterday's
+        ads. The signature does not defend against this — the old manifest
+        was genuinely signed — so the freshness check is separate. Left
+        None only where there is nothing to compare against yet.
         """
+        # A manifest is a JSON object. A bare list or string parses fine
+        # but has no `.get`; refuse it here rather than raise AttributeError
+        # deep in the read.
+        if not isinstance(raw, dict):
+            raise ValueError("Manifest is not a JSON object.")
+
         if public_keys is not None:
             verdict = verify(
                 raw,
@@ -158,6 +173,20 @@ class Manifest:
             )
             if not verdict:
                 raise UntrustedManifest(verdict)
+
+        # Freshness, after authenticity: a genuine but stale plan is still
+        # one we refuse. Checked against the signed bytes, so the version
+        # cannot be inflated without breaking the signature above.
+        if min_schedule_version is not None:
+            incoming = int(raw.get("schedule_version", 0))
+            if incoming < min_schedule_version:
+                raise UntrustedManifest(
+                    Verdict(
+                        False,
+                        f"This manifest is version {incoming}, older than the "
+                        f"version {min_schedule_version} already held.",
+                    )
+                )
 
         if raw.get("contract_version") != CONTRACT_VERSION:
             raise ValueError(
@@ -265,6 +294,7 @@ class Manifest:
         *,
         public_keys: dict[str, str] | None = None,
         stand_id: int | None = None,
+        min_schedule_version: int | None = None,
         require_signature: bool = True,
     ) -> Manifest | None:
         """
@@ -282,6 +312,7 @@ class Manifest:
                 json.loads(path.read_text(encoding="utf-8")),
                 public_keys=public_keys,
                 stand_id=stand_id,
+                min_schedule_version=min_schedule_version,
                 require_signature=require_signature,
             )
         except UntrustedManifest as exc:

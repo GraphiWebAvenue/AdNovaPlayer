@@ -309,3 +309,59 @@ def test_parse_rejects_a_manifest_signed_for_another_stand():
         Manifest.parse(
             SIGNED_FOR_STAND_3, public_keys={REAL_KEY_ID: REAL_PUBLIC}, stand_id=7
         )
+
+
+# ─── Non-object bodies ──────────────────────────────────────────────────────
+#
+# A bare list or string is valid JSON but not a manifest. It must be refused
+# through the documented path — a Verdict from verify(), a ValueError from
+# parse() — never an AttributeError from reaching into a non-dict.
+
+
+@pytest.mark.parametrize("body", [[], ["a", "b"], "just a string", 42, None])
+def test_verify_refuses_a_non_object_body(body):
+    verdict = verify(body, {REAL_KEY_ID: REAL_PUBLIC})
+    assert not verdict
+    assert "not an object" in verdict.reason
+
+
+@pytest.mark.parametrize("body", [[], ["a", "b"], "just a string", 42])
+def test_parse_refuses_a_non_object_body(body):
+    with pytest.raises(ValueError, match="not a JSON object"):
+        Manifest.parse(body)
+
+
+# ─── Freshness / anti-rollback ──────────────────────────────────────────────
+#
+# A correctly-signed but older manifest, replayed over a newer one, would
+# roll the screen back to a stale plan. The signature does not stop it — the
+# old plan was genuinely signed — so a separate version gate does. The gate
+# is exercised with public_keys=None so the signature step is skipped and
+# the version logic is what is under test; editing schedule_version on a
+# real signed vector would break its signature instead.
+
+
+def _versioned(version: int) -> dict:
+    raw = signed_manifest()
+    raw["schedule_version"] = version
+    return raw
+
+
+def test_an_older_manifest_is_refused():
+    with pytest.raises(UntrustedManifest, match="older than"):
+        Manifest.parse(_versioned(5), min_schedule_version=12)
+
+
+def test_the_same_version_is_accepted():
+    manifest = Manifest.parse(_versioned(12), min_schedule_version=12)
+    assert manifest.schedule_version == 12
+
+
+def test_a_newer_version_is_accepted():
+    manifest = Manifest.parse(_versioned(20), min_schedule_version=12)
+    assert manifest.schedule_version == 20
+
+
+def test_no_minimum_skips_the_freshness_check():
+    manifest = Manifest.parse(_versioned(1), min_schedule_version=None)
+    assert manifest.schedule_version == 1
