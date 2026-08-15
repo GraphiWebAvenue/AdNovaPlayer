@@ -47,11 +47,20 @@ trap 'rm -rf "$PROFILE"' EXIT
 #   --check-for-update-interval  never let Chromium try to update itself
 #   --disable-features=Translate,...  strip weight the panel does not need
 #   --ozone-platform=wayland     match the Pi's compositor for hw video
+#   --password-store=basic       the important one for an autologin kiosk:
+#                                 keep Chromium off the system keyring. Under
+#                                 passwordless autologin the keyring stays
+#                                 locked, so anything touching it pops an
+#                                 "Unlock Keyring" dialog on every launch —
+#                                 useless for signage, which stores no
+#                                 passwords. basic makes it never ask.
 exec "$BROWSER" \
     --kiosk \
     --start-fullscreen \
     --user-data-dir="$PROFILE" \
     --app="$URL" \
+    --password-store=basic \
+    --use-mock-keychain \
     --noerrdialogs \
     --disable-infobars \
     --disable-session-crashed-bubble \
