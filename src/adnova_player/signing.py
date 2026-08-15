@@ -35,27 +35,48 @@ HEADER_TIMESTAMP = "X-AdNova-Timestamp"
 HEADER_NONCE = "X-AdNova-Nonce"
 HEADER_SIGNATURE = "X-AdNova-Signature"
 
+# Headers folded into the signature, in this exact order.
+#
+# A device sends none of these today — the list exists so Dashboard's
+# calls to the agent can carry a credential in a header that cannot be
+# stripped or swapped in flight. The line is still present here, hashing
+# an empty value, because there must be exactly one canonical form across
+# all three systems rather than one per caller.
+BOUND_HEADERS = ("X-AdNova-Model-Key",)
 
-def canonical(method: str, path: str, timestamp: str, nonce: str, body: bytes) -> bytes:
+
+def canonical(
+    method: str,
+    path: str,
+    timestamp: str,
+    nonce: str,
+    body: bytes,
+    bound: dict[str, str] | None = None,
+) -> bytes:
     """
     The exact string both ends hash.
 
     Must match SignedRequest::compute() in Dashboard. Newline separated
     with no escaping is safe because no part can contain a newline: the
     method is a verb, the path is URL-encoded, the timestamp is digits,
-    the nonce is alphanumeric, and the body is a hex digest. Concatenating
-    without a separator is where signing schemes usually go wrong.
+    the nonce is alphanumeric, and both the body and the bound headers
+    are hex digests. Concatenating without a separator is where signing
+    schemes usually go wrong.
 
     The body is hashed rather than included so a long playback batch is
     not buffered twice, and so the signature survives whatever the
     transfer encoding does to it.
     """
+    bound = bound or {}
+    bound_line = "\n".join(f"{name}:{bound.get(name, '')}" for name in BOUND_HEADERS)
+
     return "\n".join([
         method.upper(),
         "/" + path.lstrip("/"),
         timestamp,
         nonce,
         hashlib.sha256(body).hexdigest(),
+        hashlib.sha256(bound_line.encode("utf-8")).hexdigest(),
     ]).encode("utf-8")
 
 
