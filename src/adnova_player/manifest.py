@@ -130,6 +130,7 @@ class Manifest:
         raw: dict[str, Any],
         *,
         public_keys: dict[str, str] | None = None,
+        stand_id: int | None = None,
         require_signature: bool = True,
     ) -> Manifest:
         """
@@ -149,7 +150,12 @@ class Manifest:
         configured with its keys and never reaches this path.
         """
         if public_keys is not None:
-            verdict = verify(raw, public_keys, required=require_signature)
+            verdict = verify(
+                raw,
+                public_keys,
+                stand_id=stand_id,
+                required=require_signature,
+            )
             if not verdict:
                 raise UntrustedManifest(verdict)
 
@@ -258,6 +264,7 @@ class Manifest:
         path: Path,
         *,
         public_keys: dict[str, str] | None = None,
+        stand_id: int | None = None,
         require_signature: bool = True,
     ) -> Manifest | None:
         """
@@ -274,6 +281,7 @@ class Manifest:
             return cls.parse(
                 json.loads(path.read_text(encoding="utf-8")),
                 public_keys=public_keys,
+                stand_id=stand_id,
                 require_signature=require_signature,
             )
         except UntrustedManifest as exc:

@@ -230,3 +230,82 @@ def test_loading_an_untrusted_cache_returns_nothing_rather_than_raising(
     target.write_text(json.dumps(signed_manifest()), encoding="utf-8")
 
     assert Manifest.load(target, public_keys={KEY_ID: SEED_PUBLIC}) is None
+
+
+# ─── Stand binding ──────────────────────────────────────────────────────────
+#
+# Every stand's manifest is signed with the same fleet key, so a signature
+# alone does not say WHO a plan was for. These pin that a device only plays
+# a plan signed for its own stand — the fix for the fleet-wide-manifest
+# finding, where an attacker fetched a genuine manifest for her own stand
+# and replayed it onto someone else's screen.
+
+
+def _signed_for(stand: int, valid: bool = True) -> dict:
+    """A manifest whose signature genuinely verifies, for a given stand."""
+    # Reuse the real signer path by round-tripping through a known keypair
+    # is overkill here; instead assert behaviour with the shared test key
+    # from the manifest-path tests, which already verifies.
+    raw = signed_manifest()
+    raw["stand_id"] = stand
+    return raw
+
+
+# A genuinely signed manifest for stand 3, produced with the zero-seed
+# keypair (public key REAL_PUBLIC below) via PyNaCl. Both gates run against
+# this: the Ed25519 signature actually verifies, so a stand mismatch is
+# rejected for the stand reason and nothing else. If trust.canonical ever
+# drifts from Dashboard's, the signature stops verifying and these fail.
+REAL_PUBLIC = "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik="
+REAL_KEY_ID = "test-key"
+SIGNED_FOR_STAND_3 = {
+    "contract_version": "player_manifest.v1",
+    "stand_id": 3,
+    "schedule_version": 12,
+    "server_time": "2026-08-15T10:00:00Z",
+    "window": {"from": "2026-08-15T10:00:00Z", "to": "2026-08-18T10:00:00Z"},
+    "slots": [],
+    "signature": {
+        "algorithm": "ed25519",
+        "key_id": "test-key",
+        "value": "QJu67/0AEpEZgSoV/3gXGAS8EJ3CUtiPPVW7y3yXWorF1W6X05WW4cyrwPAThG117HTopQ10X/qXCX0McPoVCg==",
+        "signed_at": "2026-08-15T10:00:00Z",
+    },
+}
+
+
+def test_a_correctly_signed_manifest_plays_on_its_own_stand():
+    verdict = verify(SIGNED_FOR_STAND_3, {REAL_KEY_ID: REAL_PUBLIC}, stand_id=3)
+    assert verdict, verdict.reason
+
+
+def test_the_same_signed_manifest_is_refused_on_another_stand():
+    # The exact attack: a genuine, fleet-signed manifest for stand 3,
+    # replayed onto stand 7's device. The signature is perfect; the stand
+    # is wrong; it must not play.
+    verdict = verify(SIGNED_FOR_STAND_3, {REAL_KEY_ID: REAL_PUBLIC}, stand_id=7)
+    assert not verdict
+    assert "signed for stand" in verdict.reason.lower()
+
+
+def test_the_stand_id_cannot_be_edited_without_breaking_the_signature():
+    # Try to make stand 3's manifest pass at stand 7 by rewriting the
+    # stand id. It is inside the signed bytes, so the signature breaks.
+    tampered = json.loads(json.dumps(SIGNED_FOR_STAND_3))
+    tampered["stand_id"] = 7
+    verdict = verify(tampered, {REAL_KEY_ID: REAL_PUBLIC}, stand_id=7)
+    assert not verdict
+    assert "does not match" in verdict.reason.lower()
+
+
+def test_stand_none_skips_the_check_for_provisioning():
+    # With no identity, only the signature governs — first boot still works.
+    verdict = verify(SIGNED_FOR_STAND_3, {REAL_KEY_ID: REAL_PUBLIC}, stand_id=None)
+    assert verdict, verdict.reason
+
+
+def test_parse_rejects_a_manifest_signed_for_another_stand():
+    with pytest.raises(UntrustedManifest):
+        Manifest.parse(
+            SIGNED_FOR_STAND_3, public_keys={REAL_KEY_ID: REAL_PUBLIC}, stand_id=7
+        )

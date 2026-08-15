@@ -77,16 +77,28 @@ def verify(
     manifest: dict[str, Any],
     public_keys: dict[str, str],
     *,
+    stand_id: int | None = None,
     required: bool = True,
 ) -> Verdict:
     """
     Check a manifest against the public keys this device was provisioned
-    with.
+    with, and against the stand it was issued for.
 
     `public_keys` maps key_id to a base64 public key. More than one is
     allowed so a key can be rotated without a flag day: Dashboard starts
     signing with the new key, devices already hold both, and the old one
     is removed a release later.
+
+    `stand_id`, when given, is this device's own stand id, and the
+    manifest must be one signed *for* it. The signature alone is not
+    enough: Dashboard signs every stand's manifest with the same fleet
+    key, so a genuine, correctly-signed manifest full of an attacker's
+    own booked ads — fetched with the attacker's own stand key — would
+    otherwise verify on any other device on the network and play her
+    advertisement on a stranger's screen. The stand id is inside the
+    signed bytes, so she cannot change it without breaking the signature;
+    binding to it here closes the gap. Left None only where the caller
+    genuinely has no identity yet (tests, first-boot provisioning).
 
     `required=False` is the migration window and nothing more. It lets a
     fleet that predates signing keep working while the keys are rolled
@@ -133,6 +145,21 @@ def verify(
         # transit, or they wrote a whole new one — and either way the
         # caller must keep playing what it already had.
         return Verdict(False, "The signature does not match this manifest.", key_id)
+
+    # Signed, and signed for us. Checked after the signature so the value
+    # being compared is one an attacker could not have altered.
+    if stand_id is not None:
+        signed_for = manifest.get("stand_id")
+        try:
+            same = int(signed_for) == int(stand_id)
+        except (TypeError, ValueError):
+            same = False
+        if not same:
+            return Verdict(
+                False,
+                f"This manifest was signed for stand {signed_for!r}, not this device.",
+                key_id,
+            )
 
     return Verdict(True, "Signature verified.", key_id)
 
