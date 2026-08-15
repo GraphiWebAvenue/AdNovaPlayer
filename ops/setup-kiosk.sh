@@ -25,13 +25,27 @@ blue() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 
 [ "$(id -u)" -eq 0 ] || { echo "Please run with sudo: sudo bash setup-kiosk.sh" >&2; exit 1; }
 
-# The user who owns the graphical session — the one the desktop autologs
-# in as. On a Pi that is the first real user (uid 1000); fall back to it
-# if logind cannot say.
-GUI_USER="$(loginctl list-users --no-legend 2>/dev/null | awk '$1>=1000 && $1<60000 {print $2; exit}')"
-[ -n "${GUI_USER:-}" ] || GUI_USER="$(getent passwd 1000 | cut -d: -f1)"
-[ -n "${GUI_USER:-}" ] || { echo "Could not find the desktop user." >&2; exit 1; }
+# The desktop user is the first real account on the Pi — uid 1000, the one
+# created when the card was written. Deterministic on purpose: the adnova
+# service account is a later uid with no password and no desktop, and
+# autologging in as it (an earlier mistake) left a login nobody could pass.
+GUI_USER="$(getent passwd 1000 | cut -d: -f1)"
+[ -n "${GUI_USER:-}" ] || { echo "Could not find the desktop user (uid 1000)." >&2; exit 1; }
 GUI_HOME="$(getent passwd "$GUI_USER" | cut -d: -f6)"
+
+blue "the desktop user is '$GUI_USER'"
+
+# ── Fix the autologin ───────────────────────────────────────────────────
+# Make the desktop log in as this user, undoing any earlier autologin set
+# to the passwordless service account. Both the modern raspi-config path
+# and the lightdm file are covered, since which one applies varies by image.
+blue "setting desktop autologin to '$GUI_USER'"
+if command -v raspi-config >/dev/null 2>&1; then
+    SUDO_USER="$GUI_USER" raspi-config nonint do_boot_behaviour B4 2>/dev/null || true
+fi
+if [ -f /etc/lightdm/lightdm.conf ]; then
+    sed -i "s/^autologin-user=.*/autologin-user=$GUI_USER/" /etc/lightdm/lightdm.conf 2>/dev/null || true
+fi
 
 blue "setting the kiosk to start for user '$GUI_USER'"
 

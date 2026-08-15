@@ -115,15 +115,12 @@ chown -R root:"$APP_USER" "$BASE"
 chmod +x "$BASE"/current/ops/*.sh
 
 # ── Auto-login to the desktop ───────────────────────────────────────────
-# The kiosk browser needs a graphical session. Point the Pi's display
-# manager at the adnova user with no password, so a reboot lands straight
-# in the player with nobody at the keyboard.
-if command -v raspi-config >/dev/null 2>&1; then
-    blue "enabling desktop autologin as $APP_USER"
-    raspi-config nonint do_boot_behaviour B4 2>/dev/null || true
-    sed -i "s/^autologin-user=.*/autologin-user=$APP_USER/" \
-        /etc/lightdm/lightdm.conf 2>/dev/null || true
-fi
+# The kiosk runs in the Pi's own desktop session, which belongs to the
+# user created when the card was written — NOT the adnova service account,
+# which has no password and no desktop. setup-kiosk.sh (called below)
+# enables autologin for that desktop user and installs the kiosk into their
+# session. An earlier version pointed autologin at adnova and produced a
+# login screen nobody could get past.
 
 # ── Hardware watchdog ───────────────────────────────────────────────────
 # The Pi's silicon watchdog, pointed at systemd. If systemd itself wedges,
