@@ -19,7 +19,10 @@ BASE=/opt/adnova-player
 CACHE=/var/lib/adnova-player
 ENV_DIR=/etc/adnova-player
 ENV_FILE="$ENV_DIR/env"
-REPO="https://github.com/GraphiWebAvenue/AdNovaPlayer.git"
+# The repo is private, reached through the read-only deploy key the
+# bootstrap installed. The `github-player` host alias in root's ssh config
+# points at github.com with that key; auto-update reuses the same remote.
+REPO="git@github-player:GraphiWebAvenue/AdNovaPlayer.git"
 
 blue() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mNOTE:\033[0m %s\n' "$*"; }
