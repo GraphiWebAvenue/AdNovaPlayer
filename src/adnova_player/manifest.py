@@ -80,6 +80,10 @@ class Slot:
     priority: str
     media: Media
     label: str | None = None
+    # Silent unless the manifest says otherwise. A screen in a shop window
+    # blaring sound is the surprising default, so the safe one is muted;
+    # Dashboard opts a stand into audio when it actually has speakers.
+    muted: bool = True
 
     @property
     def rank(self) -> int:
@@ -99,6 +103,9 @@ class Slot:
             priority=str(raw.get("priority", "ai")),
             media=Media.parse(raw["media"]),
             label=raw.get("label"),
+            # Absent means muted — the backwards-compatible default for any
+            # manifest written before audio was a field.
+            muted=bool(raw.get("muted", True)),
         )
 
 
