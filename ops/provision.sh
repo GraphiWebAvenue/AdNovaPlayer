@@ -144,14 +144,20 @@ EOF
 # ── Services ────────────────────────────────────────────────────────────
 blue "installing the services"
 install -m 644 "$BASE/current/ops/adnova-player.service"  /etc/systemd/system/
-install -m 644 "$BASE/current/ops/adnova-kiosk.service"   /etc/systemd/system/
 install -m 644 "$BASE/current/ops/adnova-update.service"  /etc/systemd/system/
 install -m 644 "$BASE/current/ops/adnova-update.timer"    /etc/systemd/system/
 
 systemctl daemon-reload
-systemctl enable --quiet adnova-player.service adnova-kiosk.service adnova-update.timer
+systemctl enable --quiet adnova-player.service adnova-update.timer
 systemctl restart adnova-player.service
 systemctl start adnova-update.timer
+
+# The kiosk browser is not a system service: on Pi OS Bookworm the display
+# is a Wayland desktop that autologs in, and the browser has to start
+# inside that session, not beside it. setup-kiosk.sh registers it in the
+# desktop user's autostart.
+blue "setting up the full-screen kiosk"
+bash "$BASE/current/ops/setup-kiosk.sh"
 
 sleep 3
 if systemctl is-active --quiet adnova-player; then
