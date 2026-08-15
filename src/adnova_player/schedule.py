@@ -64,9 +64,18 @@ class Schedule:
     Schedule; nothing here mutates.
     """
 
-    def __init__(self, manifest: Manifest | None, cache: MediaCache) -> None:
+    def __init__(
+        self,
+        manifest: Manifest | None,
+        cache: MediaCache,
+        emergency: PlayItem | None = None,
+    ) -> None:
         self._manifest = manifest
         self._cache = cache
+        # A takeover pushed from Dashboard through the heartbeat control
+        # channel — a closure notice, a safety message — that preempts the
+        # scheduled plan entirely while it is active.
+        self._emergency = emergency
 
     @property
     def manifest(self) -> Manifest | None:
@@ -85,6 +94,12 @@ class Schedule:
         slot whose media has not been cached. The caller shows whatever
         comes back and is spared having to reason about black screens.
         """
+        # A live takeover wins over everything, including a scheduled
+        # urgent slot. It is the one thing an operator reaches for when the
+        # screen must say something *now*.
+        if self._emergency is not None:
+            return self._emergency
+
         if self._manifest is None:
             return FALLBACK
 

@@ -122,6 +122,11 @@ class Manifest:
     heartbeat_seconds: int = 60
     fetched_at: datetime | None = None
 
+    # The stand's timezone and operating hours, carried so the device can
+    # power the screen down outside business hours without a separate fetch.
+    timezone: str = "UTC"
+    operating_hours: dict[str, Any] | None = None
+
     # The document exactly as it arrived, kept so the cache can be written
     # back byte for byte. Re-serialising from the parsed fields would
     # change the canonical form — a reordered key, a differently formatted
@@ -222,6 +227,10 @@ class Manifest:
             manifest_poll_seconds=int(poll.get("manifest_seconds", 600)),
             heartbeat_seconds=int(poll.get("heartbeat_seconds", 60)),
             fetched_at=datetime.now(tz=UTC),
+            timezone=str(raw.get("timezone") or "UTC"),
+            operating_hours=raw.get("operating_hours")
+            if isinstance(raw.get("operating_hours"), dict)
+            else None,
             raw=raw,
         )
 

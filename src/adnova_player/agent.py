@@ -28,14 +28,17 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from .api import DashboardApi
 from .cache import MediaCache, MediaNeed
 from .config import Config
 from .health import read as read_health
+from .hours import screen_should_be_on
 from .manifest import Manifest, UntrustedManifest
 from .playback_log import Entry, PlaybackLog, now_iso
 from .schedule import PlayItem, Schedule
+from .screen import Screen
 
 log = logging.getLogger("adnova.agent")
 
@@ -52,11 +55,13 @@ class Agent:
         api: DashboardApi,
         cache: MediaCache,
         playback: PlaybackLog,
+        screen: Screen | None = None,
     ) -> None:
         self._config = config
         self._api = api
         self._cache = cache
         self._playback = playback
+        self._screen = screen or Screen()
 
         self._lock = threading.Lock()
         self._schedule = Schedule(None, cache)
@@ -68,14 +73,29 @@ class Agent:
         self._current: PlayItem | None = None
         self._last_logged_slot: int | None = None
 
+        # A live takeover and the stand's operating hours, both refreshed
+        # from what Dashboard sends. The manifest carries the hours; the
+        # heartbeat control channel carries the takeover.
+        self._emergency: PlayItem | None = None
+        self._operating_hours: dict | None = None
+        self._timezone = "UTC"
+
         self._boot = datetime.now(tz=UTC)
 
     # ── The plan the server reads ────────────────────────────────────────
 
     def schedule(self) -> Schedule:
-        """The current plan. Called by the local server on every /state."""
+        """
+        The current plan, including any live takeover. Called by the local
+        server on every /state, so a takeover pushed a second ago is on
+        screen by the next poll.
+        """
         with self._lock:
-            return self._schedule
+            if self._emergency is None:
+                return self._schedule
+            # Rebuild a view with the takeover layered on, without mutating
+            # the stored plan — the takeover is transient.
+            return Schedule(self._schedule.manifest, self._cache, emergency=self._emergency)
 
     def on_playing(self, item: PlayItem) -> None:
         """
@@ -187,6 +207,10 @@ class Agent:
 
         with self._lock:
             self._schedule = Schedule(manifest, self._cache)
+            # Operating hours and timezone travel with the manifest, so the
+            # screen-power decision needs no separate fetch and works offline.
+            self._operating_hours = manifest.operating_hours
+            self._timezone = manifest.timezone or "UTC"
 
         # Drop media the new plan no longer references.
         self._cache.evict_except(
@@ -216,7 +240,29 @@ class Agent:
         while not self._stop.is_set():
             self._safe(self._heartbeat_once, default=None)
             self._safe(self._upload_playback, default=None)
+            self._safe(self._apply_screen_power, default=None)
             self._stop.wait(max(15, self._config.heartbeat_seconds))
+
+    def _apply_screen_power(self) -> None:
+        """
+        Power the display to match the stand's operating hours.
+
+        Evaluated in the stand's own timezone — the manifest names it — so
+        a shop in Amsterdam sleeps on Amsterdam time regardless of where
+        the Pi thinks it is. A missing or unknown zone falls back to the
+        device clock, which still beats leaving the panel lit all night.
+        """
+        with self._lock:
+            hours = self._operating_hours
+            tzname = self._timezone
+
+        try:
+            zone = ZoneInfo(tzname)
+        except Exception:  # noqa: BLE001 — an unknown zone must not stop the loop
+            zone = ZoneInfo("UTC")
+
+        local_now = datetime.now(tz=zone)
+        self._screen.apply(screen_should_be_on(hours, local_now))
 
     def _heartbeat_once(self) -> None:
         body = self._heartbeat_body()
@@ -231,6 +277,52 @@ class Agent:
         if response.get("refetch_manifest"):
             log.info("Dashboard asked for a refetch; fetching now.")
             self._safe(self._fetch_once, default=self._config.manifest_poll_seconds)
+
+        # A takeover: put an image on screen now, or clear one. Kept as a
+        # cached media reference so it is checksum-verified like any other
+        # media rather than a URL the device fetches on trust.
+        self._apply_emergency(response.get("emergency"))
+
+    def _apply_emergency(self, emergency: dict | None) -> None:
+        """
+        Install or clear a live takeover from the control channel.
+
+        A null or absent value clears it — so an operator ending a closure
+        notice simply stops sending it, and the scheduled plan returns on
+        the next poll. A takeover names its media by checksum, and it plays
+        only once that media is cached and valid, exactly like a slot.
+        """
+        if not isinstance(emergency, dict):
+            if self._emergency is not None:
+                log.info("Takeover cleared; returning to the schedule.")
+            with self._lock:
+                self._emergency = None
+            return
+
+        checksum = str(emergency.get("checksum_sha256") or "")
+        url = str(emergency.get("url") or "")
+        if not checksum or not url:
+            return
+
+        if not self._cache.has(checksum):
+            self._cache.ensure(MediaNeed(url=url, checksum_sha256=checksum))
+        if not self._cache.has(checksum):
+            log.warning("Takeover media could not be cached; not shown.")
+            return
+
+        item = PlayItem(
+            slot_id=-2,
+            ad_id=None,
+            kind="video" if emergency.get("type") == "video" else "image",
+            local_src=self._cache.local_url_path(checksum),
+            muted=bool(emergency.get("muted", True)),
+            duration_seconds=int(emergency.get("duration_seconds", 30)),
+            priority="urgent",
+            label=emergency.get("label"),
+        )
+        with self._lock:
+            self._emergency = item
+        log.info("Takeover active.")
 
     def _heartbeat_body(self) -> dict:
         health = read_health(self._config.cache_dir, self._cache.used_bytes())
