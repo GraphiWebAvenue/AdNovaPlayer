@@ -72,14 +72,20 @@ HELPER="$(dirname "$0")/adnova-kiosk-helper.sh"
 #                                 useless for signage, which stores no
 #                                 passwords. basic makes it never ask.
 #
-# Hardware video decode is the difference between smooth 1080p and a
-# slideshow on a Pi 4. By default Chromium decodes H.264 in software, which
-# a Pi cannot keep up with — hence the stutter. The feature flags below turn
-# on the board's own decoder (V4L2), and --ignore-gpu-blocklist stops
-# Chromium refusing it on unrecognised hardware. Every --enable-features and
-# --disable-features value is merged into a single flag of each: Chromium
-# honours only the last one it sees, so a second flag would silently drop
-# the first.
+# Video decode: do NOT override the Pi's own GL and decode configuration.
+#
+# An earlier version forced a pile of flags here — --use-gl=egl,
+# --enable-features=VaapiVideoDecoder,VaapiVideoDecodeLinuxGL,..., and
+# --disable-features=UseChromeOSDirectVideoDecoder — on the theory that they
+# would turn on hardware decode. Measured on a real Pi 4 (Trixie, labwc,
+# Wayland) they did the opposite: a plain 720p24 H.264 clip that a Pi decodes
+# in its sleep pinned one core at ~90% and played frame-by-frame. Stripping
+# every one of those overrides — letting Chromium keep the flags the Pi's own
+# wrapper injects via /etc/chromium.d — halved the CPU and made playback
+# smooth. The Pi 4 has no VA-API H.264 driver (its decoder is V4L2), so the
+# Vaapi flags never engaged hardware decode; they only forced a slower
+# software path. If a future Pi image gains a working VA-API driver, add the
+# flags back behind a real measurement, not a hunch.
 exec "$BROWSER" \
     --kiosk \
     --start-fullscreen \
@@ -97,12 +103,4 @@ exec "$BROWSER" \
     --overscroll-history-navigation=0 \
     --disable-notifications \
     --hide-scrollbars \
-    --ozone-platform=wayland \
-    --use-gl=egl \
-    --ignore-gpu-blocklist \
-    --enable-gpu-rasterization \
-    --enable-zero-copy \
-    --enable-accelerated-video-decode \
-    --enable-accelerated-mjpeg-decode \
-    --enable-features=UseOzonePlatform,VaapiVideoDecoder,VaapiVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxGL \
-    --disable-features=Translate,TranslateUI,MediaRouter,UseChromeOSDirectVideoDecoder
+    --ozone-platform=wayland
