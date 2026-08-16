@@ -20,13 +20,17 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
 
 from .agent import Agent
 from .api import DashboardApi
 from .cache import MediaCache
 from .config import Config, ConfigError, load
+from .config import enrollment as read_enrollment
 from .playback_log import PlaybackLog
 from .server import build_app
+
+ENV_FILE = Path(os.environ.get("ADNOVA_ENV_FILE", "/etc/adnova-player/env"))
 
 log = logging.getLogger("adnova")
 
@@ -68,8 +72,16 @@ def main() -> int:
     try:
         config = load()
     except ConfigError as exc:
-        # A misconfigured device has nothing safe to do. Exit non-zero so
-        # systemd shows it failed rather than looping a broken start.
+        # No stand key. If the device was imaged for enrollment, this is
+        # not an error — it is a blank device waiting to be adopted. Run
+        # the enrollment flow; it returns only once the device has a key,
+        # after which we restart into normal operation.
+        enroll = read_enrollment()
+        if enroll is not None:
+            return _enroll_then_restart(enroll)
+
+        # Otherwise a misconfigured device has nothing safe to do. Exit
+        # non-zero so systemd shows it failed rather than looping.
         log.error("Cannot start: %s", exc)
         return 2
 
@@ -113,6 +125,81 @@ def main() -> int:
         server_header=False,
     )
     return 0
+
+
+def _enroll_then_restart(enroll) -> int:
+    """
+    Introduce a blank device and wait until it is adopted.
+
+    While it waits, a splash server runs so the TV shows the AdNova screen
+    rather than a desktop or an error — the device looks like it is setting
+    itself up, because it is. Once adopted, the stand key is written and the
+    service is restarted into normal operation; systemd's EnvironmentFile
+    picks up the new credentials on that restart.
+    """
+    import threading
+    import time
+
+    from .enroll import Adoption, Enroller, write_credentials
+
+    log.info("No stand key yet — entering enrollment. Waiting to be adopted in Dashboard.")
+
+    # A splash so the screen is not blank while an admin adopts the device.
+    splash_cache = MediaCache(enroll.cache_dir / "media")
+    splash = _splash_server(splash_cache, enroll)
+    threading.Thread(target=splash, daemon=True).start()
+
+    enroller = Enroller(enroll.base_url, enroll.token, enroll.cache_dir / "enroll")
+    client = enroller.client()
+
+    introduced = False
+    while True:
+        if not introduced:
+            status = enroller.introduce(client)
+            introduced = status in ("pending", "approved")
+            if status == "closed":
+                introduced = False  # keep trying until an admin opens the door
+
+        result = enroller.poll(client)
+        if isinstance(result, Adoption):
+            log.info("Adopted onto stand %s. Writing credentials.", result.stand_id)
+            write_credentials(ENV_FILE, result)
+            enroller.confirm_claimed(client)
+            client.close()
+            # Restart into normal operation; the new env is read on start.
+            _restart_service()
+            return 0
+
+        if result == "rejected":
+            log.warning("This device was rejected. Waiting in case that changes.")
+
+        time.sleep(10)
+
+
+def _splash_server(cache: MediaCache, enroll):
+    """A tiny server that shows only the splash, for the enrollment wait."""
+    from .schedule import Schedule
+
+    app = build_app(cache, current_schedule=lambda: Schedule(None, cache))
+
+    def run() -> None:
+        import uvicorn
+
+        uvicorn.run(app, host=enroll.local_host, port=enroll.local_port,
+                    log_level="warning", access_log=False, server_header=False)
+
+    return run
+
+
+def _restart_service() -> None:
+    import subprocess
+
+    try:
+        subprocess.run(  # noqa: S603,S607 — fixed argv
+            ["sudo", "-n", "systemctl", "restart", "adnova-player"], timeout=15
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.error("Could not restart after enrollment: %s", exc)
 
 
 def run_forever() -> None:

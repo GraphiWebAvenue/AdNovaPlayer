@@ -33,6 +33,40 @@ class ConfigError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Enrollment:
+    """The minimal settings a blank device needs to enroll itself."""
+
+    base_url: str
+    token: str
+    cache_dir: Path
+    local_host: str
+    local_port: int
+
+
+def enrollment(env: dict[str, str] | None = None) -> Enrollment | None:
+    """
+    What a device with no stand key needs to introduce itself, or None if
+    it was not imaged for enrollment (no fleet token).
+
+    Read separately from the full config because it must work in exactly
+    the state the full config refuses to load — a device with no stand key
+    yet. That is the whole point of enrollment.
+    """
+    env = env if env is not None else dict(os.environ)
+    token = env.get("ADNOVA_ENROLL_TOKEN", "").strip()
+    if not token:
+        return None
+
+    return Enrollment(
+        base_url=env.get("ADNOVA_BASE_URL", "https://dashboard.adnovatech.online").rstrip("/"),
+        token=token,
+        cache_dir=Path(env.get("ADNOVA_CACHE_DIR", "/var/lib/adnova-player")),
+        local_host=env.get("ADNOVA_LOCAL_HOST", "127.0.0.1"),
+        local_port=_int(env, "ADNOVA_LOCAL_PORT", 8080),
+    )
+
+
+@dataclass(frozen=True)
 class Config:
     stand_id: int
     stand_key: str
