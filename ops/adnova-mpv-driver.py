@@ -38,11 +38,21 @@ IPC_SOCK = "/tmp/adnova-mpv.sock"
 # screenshot still captures it), while decode stays on the hardware.
 # A deliberately conservative, well-known flag set: a single bad flag makes
 # mpv refuse to start, which on a signage box is a black screen. Only the two
-# that matter for performance are non-obvious — --hwdec=auto (offload decode
-# to the Pi's V4L2 block; falls back to software on its own if unavailable, so
-# it can never break playback) and --vo=gpu (composited GL output, so a grim
-# screenshot still captures the frame). Everything else just makes mpv a
-# silent, idle-capable, full-screen surface with no keyboard or OSD.
+# that matter for performance are non-obvious:
+#
+#   --hwdec=v4l2m2m-copy  the whole point. Measured on a real Pi 4: a 720p24
+#       clip that pinned a core at ~90% under Chromium (and under mpv's own
+#       cautious --hwdec=auto, which skips V4L2) dropped to ~8% of one core
+#       and played perfectly with this explicit decoder. `-copy` reads the
+#       decoded frames back to system memory, which any VO can display — a
+#       touch more CPU than zero-copy but reliable, where zero-copy needs the
+#       VO to import the decoder's buffers. h264_v4l2m2m is present in mpv's
+#       `--hwdec=help` on this image, so this is a real hardware path.
+#   --vo=gpu  composited GL output, so a grim screenshot still captures the
+#       frame (a direct-to-KMS VO would show black in a grab).
+#
+# Everything else just makes mpv a silent, idle-capable, full-screen surface
+# with no keyboard or OSD.
 MPV_ARGS = [
     "mpv",
     "--idle=yes",                     # stay alive with nothing loaded
@@ -55,7 +65,7 @@ MPV_ARGS = [
     "--no-input-default-bindings",
     "--input-conf=/dev/null",
     "--cursor-autohide=always",
-    "--hwdec=auto",
+    "--hwdec=v4l2m2m-copy",
     "--vo=gpu",
     "--image-display-duration=inf",   # an image stays until the player moves on
     "--keep-open=yes",                # hold the last frame rather than flashing
