@@ -645,6 +645,10 @@ class Agent:
             "current_slot_id": current.slot_id if current and not current.is_fallback else None,
             "current_ad_id": current.ad_id if current else None,
             "state": "fallback" if (current is None or current.is_fallback) else "playing",
+            # Whether a test broadcast is what is actually on the glass right
+            # now — so Dashboard can confirm a test really started (and really
+            # stopped) instead of assuming the button worked.
+            "test_active": bool(current is not None and current.is_test),
             "uptime_seconds": int((datetime.now(tz=UTC) - self._boot).total_seconds()),
             "disk_free_bytes": health.disk_free_bytes,
             "cache_used_bytes": health.cache_used_bytes,
