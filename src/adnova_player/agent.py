@@ -540,7 +540,7 @@ class Agent:
     # session, so the helper (which runs inside it) does the grab and the
     # kiosk relaunch; the player only drops a request and reads the result.
     _SHOT_REQ = Path("/tmp/adnova-shot.req")
-    _SHOT_OUT = Path("/tmp/adnova-shot.jpg")
+    _SHOT_OUT = Path("/tmp/adnova-shot.img")  # PNG bytes (the Pi's grim has no JPEG)
     _KIOSK_REQ = Path("/tmp/adnova-kiosk.req")
 
     def _capture_and_upload(self) -> tuple[bool, str]:

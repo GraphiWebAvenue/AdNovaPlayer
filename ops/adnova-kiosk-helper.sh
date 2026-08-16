@@ -19,7 +19,7 @@ exec 9>/tmp/adnova-kiosk-helper.lock
 flock -n 9 || exit 0
 
 SHOT_REQ=/tmp/adnova-shot.req
-SHOT_OUT=/tmp/adnova-shot.jpg
+SHOT_OUT=/tmp/adnova-shot.img
 KIOSK_REQ=/tmp/adnova-kiosk.req
 KIOSK_DONE=/tmp/adnova-kiosk.done
 KIOSK="$(dirname "$0")/adnova-kiosk.sh"
@@ -28,10 +28,11 @@ while true; do
     # Screenshot: grab only when the request is newer than the last frame,
     # so a request file left lying around does not make us capture every
     # second. Written to a temp file and moved into place, so the player
-    # never reads a half-written frame. -s 0.5 halves the resolution and
-    # -q 60 keeps the JPEG to a few tens of KB off a shop's uplink.
+    # never reads a half-written frame. PNG, not JPEG: the Pi's grim is built
+    # without JPEG support ("jpeg support disabled"), and PNG is always
+    # available. -s 0.5 halves the resolution to keep it a few hundred KB.
     if [ -f "$SHOT_REQ" ] && { [ ! -f "$SHOT_OUT" ] || [ "$SHOT_REQ" -nt "$SHOT_OUT" ]; }; then
-        if grim -t jpeg -q 60 -s 0.5 "$SHOT_OUT.tmp" 2>/dev/null; then
+        if grim -s 0.5 "$SHOT_OUT.tmp" 2>/dev/null; then
             mv -f "$SHOT_OUT.tmp" "$SHOT_OUT" 2>/dev/null || true
             chmod 0644 "$SHOT_OUT" 2>/dev/null || true
         else
