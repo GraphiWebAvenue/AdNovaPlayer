@@ -25,6 +25,7 @@ logs them, and comes back on the next tick.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from datetime import UTC, datetime
@@ -90,9 +91,10 @@ class Agent:
         # Whether the last heartbeat reached Dashboard, for the admin page.
         self._last_contact_ok = False
 
-        # Command ids the device has completed, reported on the next
-        # heartbeat so Dashboard can mark them done.
-        self._pending_acks: list[int] = []
+        # Command outcomes the device has to report on the next heartbeat —
+        # {id, status, detail} — so Dashboard shows each one done or failed
+        # rather than the operator guessing whether a click landed.
+        self._pending_acks: list[dict] = []
 
         # Monotonic timestamps the loops bump on each pass, read by the
         # watchdog to decide whether the process still deserves to live.
@@ -434,10 +436,23 @@ class Agent:
             "restart": (["sudo", "-n", "systemctl", "restart", "adnova-player"], False),
             "reboot": (["sudo", "-n", "systemctl", "reboot"], False),
             "update": (["sudo", "-n", "systemctl", "start", "adnova-update.service"], True),
+            # --no-block: an OS update runs for minutes; without it, starting
+            # the oneshot unit would block this heartbeat until apt finished
+            # and time the exec out. It returns at once; the real outcome
+            # arrives later via the os-update.json result file.
+            "os_update": (["sudo", "-n", "systemctl", "start", "--no-block", "adnova-os-update.service"], True),
+        }
+        # The line Dashboard shows when a command succeeds. The async ones
+        # say so — their real outcome follows (a fresh uptime for a restart,
+        # the os-update result file for an OS update).
+        done_detail = {
+            "refetch": "Schedule fetched.",
+            "update": "Update started; the player restarts when it finishes.",
+            "os_update": "OS update started; the result follows shortly.",
         }
 
         deferred: list[tuple[int, list[str]]] = []
-        acked: list[int] = []
+        acks: list[dict] = []
 
         for entry in commands:
             if not isinstance(entry, dict):
@@ -451,23 +466,28 @@ class Agent:
 
             if name == "refetch":
                 self._safe(self._fetch_once, default=self._config.manifest_poll_seconds)
-                acked.append(cid)
+                acks.append({"id": cid, "status": "done", "detail": done_detail["refetch"]})
             elif survives:
-                if self._exec(argv):
-                    acked.append(cid)
+                ok, detail = self._exec(argv)
+                acks.append({
+                    "id": cid,
+                    "status": "done" if ok else "error",
+                    "detail": done_detail.get(name, "Done.") if ok else detail,
+                })
             else:
                 # Restart/reboot last, so any acks and this heartbeat's
                 # other work complete before the process disappears.
                 deferred.append((cid, argv))
 
-        if acked:
-            self._pending_acks.extend(acked)
+        if acks:
+            self._pending_acks.extend(acks)
 
         for _cid, argv in deferred:
             log.info("Running device command: %s", " ".join(argv))
             self._exec(argv)  # from here the process may not return
 
-    def _exec(self, argv: list[str]) -> bool:
+    def _exec(self, argv: list[str]) -> tuple[bool, str]:
+        """Run a fixed argv; return (ok, detail) where detail explains a failure."""
         import subprocess
 
         try:
@@ -476,11 +496,28 @@ class Agent:
             )
         except (OSError, subprocess.SubprocessError) as exc:
             log.warning("Command %s failed: %s", argv, exc)
-            return False
+            return False, str(exc)[:200]
         if result.returncode != 0:
-            log.warning("Command %s exited %s: %s", argv, result.returncode, result.stderr[:200])
-            return False
-        return True
+            detail = (result.stderr or result.stdout or "").strip()[:200]
+            log.warning("Command %s exited %s: %s", argv, result.returncode, detail)
+            return False, detail or f"exited {result.returncode}"
+        return True, ""
+
+    def _read_os_update(self) -> dict:
+        """
+        The last OS-update outcome, written by adnova-os-update.sh.
+
+        Reported on every heartbeat so Dashboard always shows the latest
+        result — "ok", the number of packages, or the error — instead of the
+        operator wondering whether the update button did anything. Absent or
+        unreadable simply means no update has run, which is the common case.
+        """
+        try:
+            with open("/var/lib/adnova-player/os-update.json", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def _apply_emergency(self, emergency: dict | None) -> None:
         """
@@ -530,6 +567,11 @@ class Agent:
             current = self._current
             version = self._schedule.schedule_version
 
+        # Taken and cleared together, so a failed heartbeat retries the whole
+        # set on the next beat.
+        acks = self._take_acks()
+        os_update = self._read_os_update()
+
         return {
             "contract_version": "player_heartbeat.v1",
             "stand_id": self._config.stand_id,
@@ -548,12 +590,19 @@ class Agent:
             "media_missing_count": 0,
             "pending_log_entries": self._playback.pending(),
             "last_error": "; ".join(health.warnings) or None,
-            # Commands finished since the last beat, so Dashboard marks them
-            # done. Taken and cleared here so a failed heartbeat retries them.
-            "completed_commands": self._take_acks(),
+            # Commands finished since the last beat. The ids mark them done
+            # (unchanged, older-Dashboard-compatible); command_results carries
+            # the same set with a status and a human line for each.
+            "completed_commands": [a["id"] for a in acks],
+            "command_results": acks,
+            # The latest OS-update outcome, if one has ever run, so the setup
+            # page can show "ok · 3 packages" or the error next to the button.
+            "os_update_status": os_update.get("status"),
+            "os_update_detail": os_update.get("detail"),
+            "os_update_at": os_update.get("at"),
         }
 
-    def _take_acks(self) -> list[int]:
+    def _take_acks(self) -> list[dict]:
         acks = self._pending_acks
         self._pending_acks = []
         return acks

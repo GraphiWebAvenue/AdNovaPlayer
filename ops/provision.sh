@@ -40,6 +40,13 @@ apt-get install -y -qq \
     git python3 python3-venv python3-pip curl chromium
 # Optional but nice: screenshot grabber, CEC control, image tools.
 apt-get install -y -qq grim cec-utils python3-pil 2>/dev/null || true
+# Hardware video decode + audio: VA-API stack so Chromium can offload H.264
+# to the Pi's decoder instead of stuttering in software, the diagnostic
+# tool that reports whether it took (vainfo), and the PulseAudio client
+# tools used to route and check HDMI sound. Best-effort: a board without
+# them still plays, just softer and without the vainfo readout.
+apt-get install -y -qq \
+    vainfo libva2 libva-drm2 mesa-va-drivers pulseaudio-utils 2>/dev/null || true
 
 # ── User and directories ────────────────────────────────────────────────
 if ! id "$APP_USER" >/dev/null 2>&1; then
@@ -175,16 +182,18 @@ EOF
 # wildcard, and nothing else. The worst this hands a compromised player is
 # the ability to restart or reboot its own device.
 cat > /etc/sudoers.d/adnova-player <<EOF
-$APP_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart adnova-player, /usr/bin/systemctl reboot, /usr/bin/systemctl start adnova-update.service
+$APP_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart adnova-player, /usr/bin/systemctl reboot, /usr/bin/systemctl start adnova-update.service, /usr/bin/systemctl start --no-block adnova-os-update.service
 EOF
 chmod 0440 /etc/sudoers.d/adnova-player
 visudo -c -f /etc/sudoers.d/adnova-player >/dev/null || die "the sudoers rule failed to validate"
 
 # ── Services ────────────────────────────────────────────────────────────
 blue "installing the services"
-install -m 644 "$BASE/current/ops/adnova-player.service"  /etc/systemd/system/
-install -m 644 "$BASE/current/ops/adnova-update.service"  /etc/systemd/system/
-install -m 644 "$BASE/current/ops/adnova-update.timer"    /etc/systemd/system/
+install -m 644 "$BASE/current/ops/adnova-player.service"     /etc/systemd/system/
+install -m 644 "$BASE/current/ops/adnova-update.service"     /etc/systemd/system/
+install -m 644 "$BASE/current/ops/adnova-update.timer"       /etc/systemd/system/
+install -m 644 "$BASE/current/ops/adnova-os-update.service"  /etc/systemd/system/
+install -m 755 "$BASE/current/ops/adnova-os-update.sh"       /usr/local/bin/adnova-os-update.sh
 
 systemctl daemon-reload
 systemctl enable --quiet adnova-player.service adnova-update.timer

@@ -1,0 +1,15 @@
+[Unit]
+Description=AdNova operating-system + security updates (apt)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root because apt does. It takes no argument and no input from the
+# network beyond the OS's own signed apt repositories — the player only ever
+# starts it, never passes it anything. The script favours "keep the device
+# working" (plain upgrade, no auto-reboot) and writes its outcome to a file
+# the player reports back. A long upgrade must not be killed midway, so the
+# timeout is generous.
+TimeoutStartSec=1800
+ExecStart=/usr/local/bin/adnova-os-update.sh

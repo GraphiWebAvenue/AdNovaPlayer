@@ -46,6 +46,36 @@ if ! git diff --quiet "$BEFORE" "$AFTER" -- pyproject.toml; then
     "$VENV/bin/pip" install --quiet --upgrade "$APP"
 fi
 
+# Ops files — systemd units, helper scripts, the sudoers rule — are laid
+# down by the provisioner, so a code-only update would leave a device's
+# units a release behind. Sync them here whenever anything under ops/
+# changed, so a new service or a widened sudoers rule reaches the fleet
+# through the same git channel as the code, with no site visit.
+if ! git diff --quiet "$BEFORE" "$AFTER" -- ops/; then
+    blue "ops changed — syncing units, scripts and sudoers"
+    install -m 644 "$APP/ops/adnova-player.service"     /etc/systemd/system/ || true
+    install -m 644 "$APP/ops/adnova-update.service"     /etc/systemd/system/ || true
+    install -m 644 "$APP/ops/adnova-update.timer"       /etc/systemd/system/ || true
+    install -m 644 "$APP/ops/adnova-os-update.service"  /etc/systemd/system/ || true
+    install -m 755 "$APP/ops/adnova-os-update.sh"       /usr/local/bin/adnova-os-update.sh || true
+
+    # Regenerate the sudoers rule to match this release, but never trust it
+    # unvalidated: write it to a temp file, check it with visudo, and move it
+    # into place only if it parses. A malformed sudoers file would deny the
+    # player its own restart — worse than an out-of-date one.
+    APP_USER="$(awk -F= '/^User=/{print $2}' "$APP/ops/adnova-player.service" | tr -d '[:space:]')"
+    APP_USER="${APP_USER:-adnova}"
+    SUDO_TMP="$(mktemp)"
+    printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart adnova-player, /usr/bin/systemctl reboot, /usr/bin/systemctl start adnova-update.service, /usr/bin/systemctl start --no-block adnova-os-update.service\n' \
+        "$APP_USER" > "$SUDO_TMP"
+    if visudo -c -f "$SUDO_TMP" >/dev/null 2>&1; then
+        install -m 0440 "$SUDO_TMP" /etc/sudoers.d/adnova-player || true
+    fi
+    rm -f "$SUDO_TMP"
+
+    systemctl daemon-reload || true
+fi
+
 blue "restarting"
 systemctl restart adnova-player
 
