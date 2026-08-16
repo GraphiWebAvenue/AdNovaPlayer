@@ -79,8 +79,17 @@ def _grab() -> bytes | None:
 
 
 def main() -> None:
-    env = {**os.environ, **_read_env(ENV_FILE)}
-    config = load_config(env)
+    # Keep trying to load the config: right after a reboot the group
+    # membership that lets us read the env file may not be in effect yet, and
+    # a distant stand must recover on its own without a crash-loop.
+    while True:
+        try:
+            config = load_config({**os.environ, **_read_env(ENV_FILE)})
+            break
+        except Exception as exc:  # noqa: BLE001 — any config error just means "not ready"
+            log.error("Cannot load config yet (%s); retrying in 15s.", exc)
+            time.sleep(15)
+
     api = DashboardApi(config)
     log.info(
         "Screenshot uploader started for stand %s (every %ss).",
