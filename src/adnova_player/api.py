@@ -103,6 +103,18 @@ class DashboardApi:
             return None
         return _json_or_none(response)
 
+    def get_screenshot_policy(self) -> dict[str, Any] | None:
+        """
+        What the operator wants right now: {"mode": "idle"|"once"|"live",
+        "interval": seconds}. Tiny and cheap to poll, so the device grabs the
+        screen only when someone is actually looking — never streaming frames
+        off a shop's uplink unasked. None on any failure (treated as idle).
+        """
+        response = self._get(self._config.screenshot_policy_url)
+        if response is None:
+            return None
+        return _json_or_none(response)
+
     def send_screenshot(self, jpeg: bytes) -> bool:
         """
         Upload a screenshot of the device's screen, base64 in a signed JSON

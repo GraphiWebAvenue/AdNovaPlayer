@@ -112,6 +112,10 @@ class Config:
         return f"{self.base_url}/api/v1/player/screenshot"
 
     @property
+    def screenshot_policy_url(self) -> str:
+        return f"{self.base_url}/api/v1/player/screenshot/policy"
+
+    @property
     def manifest_path(self) -> Path:
         return self.cache_dir / "manifest.json"
 

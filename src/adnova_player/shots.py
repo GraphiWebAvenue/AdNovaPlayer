@@ -31,7 +31,10 @@ from .config import load as load_config
 log = logging.getLogger("adnova.shots")
 
 ENV_FILE = os.environ.get("ADNOVA_ENV_FILE", "/etc/adnova-player/env")
-INTERVAL = int(os.environ.get("ADNOVA_SCREENSHOT_SECONDS", "30"))
+# How often to ask Dashboard whether a screenshot is wanted while none is —
+# a tiny JSON poll, so this can be brisk without costing bandwidth. Captures
+# only happen when the operator asks (mode "once") or has a live view open.
+IDLE_POLL_SECONDS = int(os.environ.get("ADNOVA_SHOT_POLL_SECONDS", "8"))
 
 
 def _read_env(path: str) -> dict[str, str]:
@@ -91,18 +94,29 @@ def main() -> None:
             time.sleep(15)
 
     api = DashboardApi(config)
-    log.info(
-        "Screenshot uploader started for stand %s (every %ss).",
-        config.stand_id,
-        INTERVAL,
-    )
+    log.info("Screenshot uploader started for stand %s.", config.stand_id)
+
+    # Poll the operator's intent on a light cadence and grab only when it is
+    # actually wanted: a single shot on request, or a frame every few seconds
+    # while a live view is open — nothing at all the rest of the time, so an
+    # idle stand in another city uses no bandwidth on pictures no one wants.
     while True:
-        png = _grab()
-        if png is not None:
-            api.send_screenshot(png)
+        policy = api.get_screenshot_policy() or {}
+        mode = policy.get("mode", "idle")
+
+        if mode in ("once", "live"):
+            png = _grab()
+            if png is not None:
+                api.send_screenshot(png)
+            else:
+                log.warning("Grab failed (grim unavailable or no display).")
+
+        if mode == "live":
+            time.sleep(max(3, int(policy.get("interval", 10))))
+        elif mode == "once":
+            time.sleep(3)   # one shot done; look again soon in case live opens
         else:
-            log.warning("No screenshot this tick (grim unavailable or no display).")
-        time.sleep(max(10, INTERVAL))
+            time.sleep(IDLE_POLL_SECONDS)
 
 
 if __name__ == "__main__":

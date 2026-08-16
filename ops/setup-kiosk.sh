@@ -45,6 +45,12 @@ if getent group adnova >/dev/null 2>&1; then
 fi
 install -d -o adnova -g adnova -m 0750 /var/lib/adnova-player/ipc 2>/dev/null || true
 chmod g+rx /var/lib/adnova-player 2>/dev/null || true
+# The uploader reads /etc/adnova-player/env as the adnova group, which needs
+# the directory to be group-traversable — the 0640 file inside is useless if
+# the group cannot enter its folder. This is why the first screenshots failed
+# with "Permission denied" on the env file.
+chown root:adnova /etc/adnova-player 2>/dev/null || true
+chmod 0750 /etc/adnova-player 2>/dev/null || true
 
 # ── Fix the autologin ───────────────────────────────────────────────────
 # Make the desktop log in as this user, undoing any earlier autologin set
