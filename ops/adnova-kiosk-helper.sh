@@ -40,9 +40,13 @@ while true; do
         fi
     fi
 
-    # Kiosk relaunch: kill the browser and start it again, once per request.
+    # Display relaunch: kill the current display and start it again, once per
+    # request. Killing the driver and mpv frees the launcher's flock, so the
+    # relaunched instance acquires it instead of exiting immediately.
     if [ -f "$KIOSK_REQ" ] && { [ ! -f "$KIOSK_DONE" ] || [ "$KIOSK_REQ" -nt "$KIOSK_DONE" ]; }; then
         touch "$KIOSK_DONE"
+        pkill -f 'adnova-mpv-driver' 2>/dev/null || true
+        pkill -x mpv 2>/dev/null || true
         pkill -f 'chromium' 2>/dev/null || true
         sleep 1
         if [ -f "$KIOSK" ]; then

@@ -40,6 +40,9 @@ apt-get install -y -qq \
     git python3 python3-venv python3-pip curl chromium
 # Optional but nice: screenshot grabber, CEC control, image tools.
 apt-get install -y -qq grim cec-utils python3-pil 2>/dev/null || true
+# mpv is the display: it hardware-decodes video on the Pi's V4L2 block, which
+# Chromium cannot, so it is required, not optional. adnova-kiosk.sh drives it.
+apt-get install -y -qq mpv
 # Hardware video decode + audio: VA-API stack so Chromium can offload H.264
 # to the Pi's decoder instead of stuttering in software, the diagnostic
 # tool that reports whether it took (vainfo), and the PulseAudio client
