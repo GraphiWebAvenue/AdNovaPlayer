@@ -13,6 +13,16 @@
 #
 set -euo pipefail
 
+# One kiosk only. setup-kiosk registers the launcher in more than one place
+# (labwc autostart, wayfire, XDG) so a session that honours two of them fires
+# two browsers — both full-screen, fighting over the display, which looks
+# like a black or flickering screen. The lock makes the extra launch exit at
+# once. The fd is inherited across the exec below, so the lock is held for as
+# long as the browser lives and released the moment it is killed — which is
+# exactly what a remote kiosk-restart needs.
+exec 9>/tmp/adnova-kiosk.lock
+flock -n 9 || exit 0
+
 URL="${ADNOVA_KIOSK_URL:-http://127.0.0.1:8080/}"
 
 # Wait for the local player to answer before pointing the browser at it,

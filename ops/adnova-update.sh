@@ -39,11 +39,18 @@ fi
 blue "updating ${BEFORE:0:7} -> ${AFTER:0:7}"
 git reset --quiet --hard origin/main
 
-# Dependencies only when they changed — a pip run on every update would
-# thrash a shop's uplink and the Pi's card for nothing.
+# Reinstall the package on every update. It is a non-editable install, so a
+# copy lives in the venv and a changed .py file does not reach the running
+# player until pip copies it in again — and because the version rarely bumps,
+# only --force-reinstall makes a same-version reinstall actually happen. This
+# was the bug behind "the code updated but nothing changed". Dependencies are
+# only touched when pyproject changed, to spare a shop's uplink.
 if ! git diff --quiet "$BEFORE" "$AFTER" -- pyproject.toml; then
     blue "dependencies changed — installing"
     "$VENV/bin/pip" install --quiet --upgrade "$APP"
+else
+    blue "reinstalling the player package"
+    "$VENV/bin/pip" install --quiet --force-reinstall --no-deps "$APP"
 fi
 
 # Ops files — systemd units, helper scripts, the sudoers rule — are laid
