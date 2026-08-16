@@ -43,6 +43,22 @@ apt-get install -y -qq grim cec-utils python3-pil 2>/dev/null || true
 # mpv is the display: it hardware-decodes video on the Pi's V4L2 block, which
 # Chromium cannot, so it is required, not optional. adnova-kiosk.sh drives it.
 apt-get install -y -qq mpv
+
+# ── Display: cap output at 1080p ──────────────────────────────────────────
+# Signage panels vary wildly — 4K, 1080p, odd sizes — and a Pi 4 cannot render
+# a 4K desktop smoothly: it decodes video in hardware fine, but scaling every
+# frame up to 3840x2160 on the VideoCore GPU turns smooth playback into a
+# slideshow. Force 1080p60 at the kernel level, on both HDMI ports, so every
+# stand runs the one resolution the Pi is always comfortable with and a 4K
+# panel can never drag it down. 1080p60 is a universal HDMI mode; a panel that
+# somehow lacks it falls back to its own best mode. Kernel-level (in cmdline)
+# so it applies before the compositor, with no wlr-randr timing to race.
+CMDLINE=/boot/firmware/cmdline.txt
+[ -f "$CMDLINE" ] || CMDLINE=/boot/cmdline.txt
+if [ -f "$CMDLINE" ] && ! grep -q 'video=HDMI-A-1:1920x1080' "$CMDLINE"; then
+    sed -i 's/$/ video=HDMI-A-1:1920x1080@60 video=HDMI-A-2:1920x1080@60/' "$CMDLINE"
+    blue "capped display output at 1080p on both HDMI ports"
+fi
 # Hardware video decode + audio: VA-API stack so Chromium can offload H.264
 # to the Pi's decoder instead of stuttering in software, the diagnostic
 # tool that reports whether it took (vainfo), and the PulseAudio client
