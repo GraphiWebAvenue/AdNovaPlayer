@@ -35,6 +35,17 @@ GUI_HOME="$(getent passwd "$GUI_USER" | cut -d: -f6)"
 
 blue "the desktop user is '$GUI_USER'"
 
+# The desktop user runs the in-session pieces — the mpv driver, the helper,
+# and the screenshot uploader. The uploader reads the stand credentials from
+# /etc/adnova-player/env (root:adnova 0640) and the helper reads the restart
+# request under /var/lib/adnova-player/ipc (adnova-owned). Add the desktop
+# user to the adnova group so it can read both, and lay down the ipc dir.
+if getent group adnova >/dev/null 2>&1; then
+    usermod -aG adnova "$GUI_USER" 2>/dev/null || true
+fi
+install -d -o adnova -g adnova -m 0750 /var/lib/adnova-player/ipc 2>/dev/null || true
+chmod g+rx /var/lib/adnova-player 2>/dev/null || true
+
 # ── Fix the autologin ───────────────────────────────────────────────────
 # Make the desktop log in as this user, undoing any earlier autologin set
 # to the passwordless service account. Both the modern raspi-config path

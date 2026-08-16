@@ -60,6 +60,15 @@ fi
 HELPER="$(dirname "$0")/adnova-kiosk-helper.sh"
 [ -f "$HELPER" ] && setsid bash "$HELPER" >/dev/null 2>&1 &
 
+# Screenshot uploader: grabs the screen and posts it to Dashboard on a slow
+# loop — in-session (grim needs the display) and under the player's venv (to
+# reuse its signing and credentials). It runs independently of the player
+# service, so an operator in another city can see the screen even if the
+# player has crashed. The player itself cannot do this: ProtectSystem=strict
+# stops it writing the exchange files this used to need.
+VENV_PY=/opt/adnova-player/venv/bin/python
+[ -x "$VENV_PY" ] && setsid "$VENV_PY" -m adnova_player.shots >/dev/null 2>&1 &
+
 # Hand the screen to the mpv driver. It launches mpv, polls the player's
 # /state, and drives mpv over its IPC socket — hardware-decoding video the
 # whole time. Runs under the system python (stdlib only), so no venv here.
