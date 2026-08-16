@@ -74,8 +74,36 @@ blue "installing dependencies"
 "$BASE/venv/bin/pip" install --quiet "$BASE/current"
 
 # ── Credentials ─────────────────────────────────────────────────────────
+#
+# Two ways in. Enrollment mode (ADNOVA_ENROLL_TOKEN set, the no-USB path):
+# the device is written with only a fleet token, boots, introduces itself,
+# and collects its stand key once an admin adopts it in Dashboard — nothing
+# is typed here. Manual mode (no token): the installer asks for the stand
+# id and key from the install sheet, the original path.
 if [ -f "$ENV_FILE" ]; then
     blue "environment file already exists — leaving it alone"
+elif [ -n "${ADNOVA_ENROLL_TOKEN:-}" ]; then
+    blue "enrollment mode — this device will adopt itself in Dashboard"
+
+    # A random admin password for the on-site page, since nobody is here to
+    # choose one. It is written to the env, root-only; an operator can set a
+    # known one later if they want the local page.
+    ADMIN_PASS="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 20)"
+    PASS_HASH="$("$BASE/venv/bin/python" -c \
+        "from adnova_player.admin import hash_password; print(hash_password('''$ADMIN_PASS'''))")"
+
+    cat > "$ENV_FILE" <<EOF
+# AdNova Player — enrollment mode, $(date -u +%Y-%m-%dT%H:%M:%SZ).
+# No stand key yet: the device enrolls and collects one after an admin
+# adopts it in Dashboard. The stand id, key and signing key are written
+# here automatically on adoption.
+ADNOVA_BASE_URL=${ADNOVA_BASE_URL:-https://dashboard.adnovatech.online}
+ADNOVA_CACHE_DIR=$CACHE
+ADNOVA_ENROLL_TOKEN=$ADNOVA_ENROLL_TOKEN
+ADNOVA_ADMIN_USER=admin
+ADNOVA_ADMIN_PASSWORD_HASH=$PASS_HASH
+EOF
+    warn "adopt this device in Dashboard → Devices to finish setup."
 else
     blue "let's provision this device"
     echo
@@ -137,6 +165,20 @@ cat > /etc/systemd/system.conf.d/adnova-watchdog.conf <<'EOF'
 RuntimeWatchdogSec=15
 RebootWatchdogSec=2min
 EOF
+
+# ── Limited sudo for the service user ───────────────────────────────────
+#
+# The player runs as the unprivileged adnova user but must be able to
+# restart itself, reboot the board, and trigger its own update — for the
+# remote command menu and for the restart after enrollment. It is granted
+# exactly those three systemctl invocations, spelled out in full with no
+# wildcard, and nothing else. The worst this hands a compromised player is
+# the ability to restart or reboot its own device.
+cat > /etc/sudoers.d/adnova-player <<EOF
+$APP_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart adnova-player, /usr/bin/systemctl reboot, /usr/bin/systemctl start adnova-update.service
+EOF
+chmod 0440 /etc/sudoers.d/adnova-player
+visudo -c -f /etc/sudoers.d/adnova-player >/dev/null || die "the sudoers rule failed to validate"
 
 # ── Services ────────────────────────────────────────────────────────────
 blue "installing the services"
