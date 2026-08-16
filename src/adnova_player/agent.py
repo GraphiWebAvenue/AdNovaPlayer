@@ -86,6 +86,10 @@ class Agent:
         # Whether the last heartbeat reached Dashboard, for the admin page.
         self._last_contact_ok = False
 
+        # Command ids the device has completed, reported on the next
+        # heartbeat so Dashboard can mark them done.
+        self._pending_acks: list[int] = []
+
         # Monotonic timestamps the loops bump on each pass, read by the
         # watchdog to decide whether the process still deserves to live.
         self._fetch_alive = _mono()
@@ -375,6 +379,80 @@ class Agent:
         # media rather than a URL the device fetches on trust.
         self._apply_emergency(response.get("emergency"))
 
+        # Named operations queued by an operator. Only the fixed set below
+        # is ever run — the response never carries a shell string, and this
+        # would ignore one if it did.
+        self._run_commands(response.get("commands"))
+
+    def _run_commands(self, commands: object) -> None:
+        """
+        Execute the whitelisted operations the heartbeat delivered.
+
+        The command is matched against a closed map to a fixed argv — there
+        is no path from the network to an arbitrary shell. A command that
+        restarts or reboots the device is acted on last and never acked,
+        because the process is gone before it could; its returning heartbeat
+        with fresh uptime is the confirmation. The others ack so Dashboard
+        can show them done.
+        """
+        if not isinstance(commands, list):
+            return
+
+        # name -> (argv, survives) — survives=False means the process ends,
+        # so it cannot ack and must run after everything else.
+        runnable = {
+            "refetch": (None, True),  # handled in-process, not via a command
+            "restart": (["sudo", "-n", "systemctl", "restart", "adnova-player"], False),
+            "reboot": (["sudo", "-n", "systemctl", "reboot"], False),
+            "update": (["sudo", "-n", "systemctl", "start", "adnova-update.service"], True),
+        }
+
+        deferred: list[tuple[int, list[str]]] = []
+        acked: list[int] = []
+
+        for entry in commands:
+            if not isinstance(entry, dict):
+                continue
+            cid = entry.get("id")
+            name = entry.get("command")
+            if not isinstance(cid, int) or name not in runnable:
+                continue
+
+            argv, survives = runnable[name]
+
+            if name == "refetch":
+                self._safe(self._fetch_once, default=self._config.manifest_poll_seconds)
+                acked.append(cid)
+            elif survives:
+                if self._exec(argv):
+                    acked.append(cid)
+            else:
+                # Restart/reboot last, so any acks and this heartbeat's
+                # other work complete before the process disappears.
+                deferred.append((cid, argv))
+
+        if acked:
+            self._pending_acks.extend(acked)
+
+        for _cid, argv in deferred:
+            log.info("Running device command: %s", " ".join(argv))
+            self._exec(argv)  # from here the process may not return
+
+    def _exec(self, argv: list[str]) -> bool:
+        import subprocess
+
+        try:
+            result = subprocess.run(  # noqa: S603 — fixed argv from a closed map
+                argv, capture_output=True, text=True, timeout=30
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            log.warning("Command %s failed: %s", argv, exc)
+            return False
+        if result.returncode != 0:
+            log.warning("Command %s exited %s: %s", argv, result.returncode, result.stderr[:200])
+            return False
+        return True
+
     def _apply_emergency(self, emergency: dict | None) -> None:
         """
         Install or clear a live takeover from the control channel.
@@ -441,7 +519,15 @@ class Agent:
             "media_missing_count": 0,
             "pending_log_entries": self._playback.pending(),
             "last_error": "; ".join(health.warnings) or None,
+            # Commands finished since the last beat, so Dashboard marks them
+            # done. Taken and cleared here so a failed heartbeat retries them.
+            "completed_commands": self._take_acks(),
         }
+
+    def _take_acks(self) -> list[int]:
+        acks = self._pending_acks
+        self._pending_acks = []
+        return acks
 
     def _upload_playback(self) -> None:
         batch = self._playback.take_batch()
