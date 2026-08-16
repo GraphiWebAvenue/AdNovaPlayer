@@ -37,7 +37,7 @@ from .health import read as read_health
 from .hours import screen_should_be_on
 from .manifest import Manifest, UntrustedManifest
 from .playback_log import Entry, PlaybackLog, now_iso
-from .schedule import PlayItem, Schedule
+from .schedule import FALLBACK, PlayItem, Schedule, fallback_item
 from .screen import Screen
 
 log = logging.getLogger("adnova.agent")
@@ -79,6 +79,9 @@ class Agent:
         self._emergency: PlayItem | None = None
         self._operating_hours: dict | None = None
         self._timezone = "UTC"
+        # The current gap-filler, rebuilt whenever a plan installs. Starts as
+        # the built-in filler until a manifest names one.
+        self._fallback: PlayItem = FALLBACK
 
         # Whether the last heartbeat reached Dashboard, for the admin page.
         self._last_contact_ok = False
@@ -103,7 +106,12 @@ class Agent:
                 return self._schedule
             # Rebuild a view with the takeover layered on, without mutating
             # the stored plan — the takeover is transient.
-            return Schedule(self._schedule.manifest, self._cache, emergency=self._emergency)
+            return Schedule(
+                self._schedule.manifest,
+                self._cache,
+                emergency=self._emergency,
+                fallback=self._fallback,
+            )
 
     def on_playing(self, item: PlayItem) -> None:
         """
@@ -164,8 +172,12 @@ class Agent:
             stand_id=self._config.stand_id,
         )
         if manifest is not None:
+            fallback = fallback_item(manifest.fallback_media, self._cache)
             with self._lock:
-                self._schedule = Schedule(manifest, self._cache)
+                self._schedule = Schedule(manifest, self._cache, fallback=fallback)
+                self._fallback = fallback
+                self._operating_hours = manifest.operating_hours
+                self._timezone = manifest.timezone or "UTC"
             log.info("Loaded cached plan (version %s).", manifest.schedule_version)
         else:
             log.info("No usable cached plan; the fallback loop plays until one arrives.")
@@ -212,10 +224,23 @@ class Agent:
         # Download the preload horizon before installing the plan, so a slot
         # never goes live before its bytes are on disk.
         self._download_horizon(manifest, moment)
+
+        # The fallback loop is downloaded too, so a gap never shows black
+        # while the operator's chosen filler is still on the wire.
+        if manifest.fallback_media is not None:
+            self._cache.ensure(MediaNeed(
+                url=manifest.fallback_media.url,
+                checksum_sha256=manifest.fallback_media.checksum_sha256,
+                size_bytes=manifest.fallback_media.bytes,
+            ))
+
         manifest.save(self._config.manifest_path)
 
+        fallback = fallback_item(manifest.fallback_media, self._cache)
+
         with self._lock:
-            self._schedule = Schedule(manifest, self._cache)
+            self._schedule = Schedule(manifest, self._cache, fallback=fallback)
+            self._fallback = fallback
             # Operating hours and timezone travel with the manifest, so the
             # screen-power decision needs no separate fetch and works offline.
             self._operating_hours = manifest.operating_hours

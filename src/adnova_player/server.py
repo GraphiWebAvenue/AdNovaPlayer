@@ -91,6 +91,7 @@ def build_app(
             "kind": item.kind,
             "src": item.local_src,
             "muted": item.muted,
+            "loop": item.loop,
             "duration_seconds": item.duration_seconds,
             "priority": item.priority,
             "label": item.label,
@@ -142,29 +143,39 @@ _KIOSK_HTML = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AdNova</title>
+<!-- An empty favicon so the browser never fires a 404 request that could
+     flash a loading indicator. -->
+<link rel="icon" href="data:,">
 <style>
   :root { color-scheme: dark; }
   html, body {
     margin: 0; padding: 0; width: 100vw; height: 100vh;
-    background: #000; overflow: hidden; cursor: none;
+    background: #000; overflow: hidden;
   }
+  /* No pointer, ever, anywhere. A stray cursor — including the "busy"
+     spinner a hard-working CPU shows — has no place on a shop screen. */
+  *, *::before, *::after { cursor: none !important; }
   .layer {
     position: fixed; inset: 0;
     display: flex; align-items: center; justify-content: center;
-    opacity: 0; transition: opacity 600ms ease-in-out;
+    opacity: 0; transition: opacity 500ms ease-in-out;
     background: #000;
+    will-change: opacity;
   }
   .layer.show { opacity: 1; }
   .layer img, .layer video {
-    max-width: 100%; max-height: 100%;
     width: 100%; height: 100%; object-fit: contain;
+    background: #000;
   }
+  /* Kill any native media UI: a signage video is never scrubbed. */
+  video::-webkit-media-controls,
+  video::-webkit-media-controls-enclosure { display: none !important; }
   #splash {
     position: fixed; inset: 0; display: flex;
     align-items: center; justify-content: center;
     background: #0b0b0f; color: #cbd5e1;
     font: 600 2.2vw/1.4 system-ui, sans-serif; letter-spacing: .08em;
-    transition: opacity 600ms ease-in-out;
+    transition: opacity 500ms ease-in-out;
   }
   #splash.hidden { opacity: 0; pointer-events: none; }
   .brand { text-transform: uppercase; opacity: .85; }
@@ -179,7 +190,9 @@ _KIOSK_HTML = """<!doctype html>
   "use strict";
 
   // Two layers, swapped on each change so the outgoing media fades out as
-  // the incoming one fades in — no black frame between slots.
+  // the incoming one fades in. The outgoing element is torn down the moment
+  // the fade ends, so a video never keeps decoding behind the scenes — two
+  // simultaneous decodes is exactly what makes a Pi stutter.
   const layers = [document.getElementById("a"), document.getElementById("b")];
   const splash = document.getElementById("splash");
   let front = 0;
@@ -206,14 +219,14 @@ _KIOSK_HTML = """<!doctype html>
       show(state);
     }
 
-    // Ask again exactly when this item ends, bounded so we still recover
-    // if a manifest changes mid-slot.
-    const ms = nextPollMs(state);
-    schedule(ms);
+    schedule(nextPollMs(state));
   }
 
   function nextPollMs(state) {
     const floor = 1000, ceil = 15000;
+    // A looping fallback never changes on its own; poll it slowly so we
+    // notice when real content returns without hammering the server.
+    if (state.loop) return 4000;
     if (state.next_change_at) {
       const dt = new Date(state.next_change_at) - new Date(state.server_time);
       if (isFinite(dt) && dt > 0) return Math.min(ceil, Math.max(floor, dt + 200));
@@ -228,29 +241,35 @@ _KIOSK_HTML = """<!doctype html>
 
   function show(state) {
     const back = layers[1 - front];
+    const oldFront = layers[front];
+
+    const el = state.kind === "video" ? makeVideo(state) : makeImage(state);
     back.innerHTML = "";
+    if (el) back.appendChild(el);
 
-    const el = state.kind === "video"
-      ? makeVideo(state)
-      : makeImage(state);
-
-    back.appendChild(el);
-
-    // Reveal the branding fade only once, on the first real content.
     if (!state.is_fallback) splash.classList.add("hidden");
 
-    // Crossfade: bring the back layer forward, drop the old front.
+    // Bring the back layer forward, drop the old one, then tear the old
+    // one down once the fade has finished so its video stops decoding.
     requestAnimationFrame(() => {
       back.classList.add("show");
-      layers[front].classList.remove("show");
+      oldFront.classList.remove("show");
       front = 1 - front;
+      setTimeout(() => teardown(oldFront), 520);
     });
   }
 
+  function teardown(layer) {
+    const v = layer.querySelector("video");
+    if (v) { try { v.pause(); v.removeAttribute("src"); v.load(); } catch (e) {} }
+    layer.innerHTML = "";
+  }
+
   function makeImage(state) {
+    if (state.is_fallback && state.src === "/fallback") return null; // dark filler
     const img = new Image();
-    img.src = state.is_fallback ? "" : state.src;
-    if (state.is_fallback) return fallbackNode();
+    img.decoding = "async";
+    img.src = state.src;
     return img;
   }
 
@@ -258,18 +277,17 @@ _KIOSK_HTML = """<!doctype html>
     const v = document.createElement("video");
     v.src = state.src;
     v.autoplay = true;
-    v.muted = !!state.muted;      // sound only when the manifest allows it
-    v.loop = false;
+    v.muted = !!state.muted;         // sound only when the manifest allows it
+    v.loop = !!state.loop;           // the fallback loops; a slot plays once
     v.playsInline = true;
-    v.play().catch(() => {});      // autoplay guard; muted always allowed
+    v.preload = "auto";
+    v.disablePictureInPicture = true;
+    v.controls = false;
+    // Start playback as soon as there is enough to show, so there is no
+    // frozen first frame while the rest buffers.
+    v.addEventListener("canplay", () => { v.play().catch(() => {}); }, { once: true });
+    v.play().catch(() => {});
     return v;
-  }
-
-  function fallbackNode() {
-    const d = document.createElement("div");
-    d.style.cssText = "color:#334155;font:600 3vw system-ui;letter-spacing:.1em";
-    d.textContent = "";
-    return d;
   }
 
   poll();

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .cache import MediaCache
-from .manifest import Manifest, Slot
+from .manifest import Manifest, Media, Slot
 
 
 @dataclass(frozen=True)
@@ -34,10 +34,13 @@ class PlayItem:
     duration_seconds: int
     priority: str
     label: str | None = None
+    # A fallback loop repeats until real content returns; a scheduled slot
+    # plays once and moves on. The browser reads this to set video `loop`.
+    loop: bool = False
 
     @property
     def is_fallback(self) -> bool:
-        return self.kind == "fallback"
+        return self.priority == "fallback"
 
 
 # What the bundled loop looks like to the rest of the system: a synthetic
@@ -55,6 +58,33 @@ FALLBACK = PlayItem(
 )
 
 
+def fallback_item(media: Media | None, cache: MediaCache) -> PlayItem:
+    """
+    Build the gap-filler from the operator's chosen media, if it is cached.
+
+    Falls back to the built-in filler when there is no configured media or
+    it has not downloaded yet — so the promise holds at every stage: an
+    unconfigured stand, a stand mid-download, and a stand with its loop
+    ready all show *something*, never black. The loop repeats until real
+    content returns.
+    """
+    if media is None or not cache.has(media.checksum_sha256):
+        return FALLBACK
+
+    is_video = media.type == "video"
+    return PlayItem(
+        slot_id=-1,
+        ad_id=None,
+        kind="video" if is_video else "image",
+        local_src=cache.local_url_path(media.checksum_sha256),
+        muted=True,  # a gap-filler is always silent; it is not an ad
+        duration_seconds=0,  # loops, so duration is irrelevant
+        priority="fallback",
+        label="AdNova",
+        loop=True,
+    )
+
+
 class Schedule:
     """
     A verified manifest, resolved against the cache.
@@ -69,6 +99,7 @@ class Schedule:
         manifest: Manifest | None,
         cache: MediaCache,
         emergency: PlayItem | None = None,
+        fallback: PlayItem | None = None,
     ) -> None:
         self._manifest = manifest
         self._cache = cache
@@ -76,6 +107,9 @@ class Schedule:
         # channel — a closure notice, a safety message — that preempts the
         # scheduled plan entirely while it is active.
         self._emergency = emergency
+        # What fills a gap: the operator's chosen loop when one is cached,
+        # or the calm built-in filler. Never a black screen.
+        self._fallback = fallback or FALLBACK
 
     @property
     def manifest(self) -> Manifest | None:
@@ -101,13 +135,13 @@ class Schedule:
             return self._emergency
 
         if self._manifest is None:
-            return FALLBACK
+            return self._fallback
 
         slot = self._manifest.slot_at(moment)
         if slot is None:
-            return FALLBACK
+            return self._fallback
 
-        return self._resolve(slot) or FALLBACK
+        return self._resolve(slot) or self._fallback
 
     def next_change_after(self, moment: datetime) -> datetime | None:
         """

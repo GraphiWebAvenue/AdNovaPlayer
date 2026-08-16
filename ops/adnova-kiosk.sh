@@ -54,6 +54,15 @@ trap 'rm -rf "$PROFILE"' EXIT
 #                                 "Unlock Keyring" dialog on every launch —
 #                                 useless for signage, which stores no
 #                                 passwords. basic makes it never ask.
+#
+# Hardware video decode is the difference between smooth 1080p and a
+# slideshow on a Pi 4. By default Chromium decodes H.264 in software, which
+# a Pi cannot keep up with — hence the stutter. The feature flags below turn
+# on the board's own decoder (V4L2), and --ignore-gpu-blocklist stops
+# Chromium refusing it on unrecognised hardware. Every --enable-features and
+# --disable-features value is merged into a single flag of each: Chromium
+# honours only the last one it sees, so a second flag would silently drop
+# the first.
 exec "$BROWSER" \
     --kiosk \
     --start-fullscreen \
@@ -69,8 +78,12 @@ exec "$BROWSER" \
     --autoplay-policy=no-user-gesture-required \
     --disable-pinch \
     --overscroll-history-navigation=0 \
-    --disable-features=Translate,TranslateUI,MediaRouter \
     --disable-notifications \
     --hide-scrollbars \
     --ozone-platform=wayland \
-    --enable-features=UseOzonePlatform
+    --ignore-gpu-blocklist \
+    --enable-gpu-rasterization \
+    --enable-zero-copy \
+    --canvas-oop-rasterization \
+    --enable-features=UseOzonePlatform,VaapiVideoDecoder,VaapiVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxGL,CanvasOopRasterization \
+    --disable-features=Translate,TranslateUI,MediaRouter,UseChromeOSDirectVideoDecoder

@@ -127,6 +127,11 @@ class Manifest:
     timezone: str = "UTC"
     operating_hours: dict[str, Any] | None = None
 
+    # The loop shown when nothing is scheduled — a video or image the
+    # operator chose, so the screen is never black between campaigns. None
+    # falls back to the calm built-in filler.
+    fallback_media: Media | None = None
+
     # The document exactly as it arrived, kept so the cache can be written
     # back byte for byte. Re-serialising from the parsed fields would
     # change the canonical form — a reordered key, a differently formatted
@@ -231,6 +236,7 @@ class Manifest:
             operating_hours=raw.get("operating_hours")
             if isinstance(raw.get("operating_hours"), dict)
             else None,
+            fallback_media=_parse_fallback(raw.get("fallback")),
             raw=raw,
         )
 
@@ -382,6 +388,32 @@ class Manifest:
                 for s in self.slots
             ],
         }
+
+
+def _parse_fallback(raw: Any) -> Media | None:
+    """
+    The fallback loop's media, if the manifest names one.
+
+    Reuses Media so the fallback is downloaded and checksum-verified on
+    exactly the same path as any advertisement — the loop that fills a gap
+    is held to the same proof as the ads it stands in for. A block with no
+    media (`media_url`/`checksum_sha256` absent) means "use the built-in
+    filler", which is a dark calm field, never an error.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    url = raw.get("media_url")
+    checksum = raw.get("checksum_sha256")
+    if not url or not checksum:
+        return None
+
+    return Media(
+        url=str(url),
+        type=str(raw.get("type", "image")),
+        checksum_sha256=str(checksum),
+        bytes=int(raw.get("bytes", 0)),
+    )
 
 
 def _dt(value: Any) -> datetime:
