@@ -67,6 +67,13 @@ MPV_ARGS = [
     "--cursor-autohide=always",
     "--hwdec=v4l2m2m-copy",
     "--vo=gpu",
+    # Force OpenGL, not Vulkan. On a Pi 4 driving a 4K panel, mpv's default
+    # Vulkan backend fails to allocate the 3840x2160 swapchain
+    # (VK_ERROR_OUT_OF_HOST_MEMORY, repeated) and the picture freezes. The
+    # VideoCore's OpenGL ES path handles 4K fine. Wayland context to match the
+    # compositor (and keep the frame composited, so grim still captures it).
+    "--gpu-api=opengl",
+    "--gpu-context=wayland",
     "--image-display-duration=inf",   # an image stays until the player moves on
     # Loop every clip. Without this a short ad plays once and freezes on its
     # last frame (--keep-open), which reads as "the video stopped". The player
