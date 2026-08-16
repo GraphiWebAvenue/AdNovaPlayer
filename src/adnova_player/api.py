@@ -103,6 +103,22 @@ class DashboardApi:
             return None
         return _json_or_none(response)
 
+    def send_screenshot(self, jpeg: bytes) -> bool:
+        """
+        Upload a screenshot of the device's screen, base64 in a signed JSON
+        body so it travels the same authenticated path as every other call.
+        Best-effort: True on success, False on any failure — a screenshot is
+        a diagnostic, never something the loop should stall on.
+        """
+        import base64
+
+        body = {
+            "stand_id": self._config.stand_id,
+            "image_b64": base64.b64encode(jpeg).decode("ascii"),
+        }
+        response = self._post(self._config.screenshot_url, body)
+        return response is not None
+
     def close(self) -> None:
         self._client.close()
 

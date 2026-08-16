@@ -37,6 +37,13 @@ fi
 PROFILE="$(mktemp -d /tmp/adnova-kiosk.XXXXXX)"
 trap 'rm -rf "$PROFILE"' EXIT
 
+# Start the in-session helper that answers the player's screenshot and
+# kiosk-restart requests — it needs this Wayland session, which the headless
+# player process cannot reach. It locks itself to one instance, so launching
+# it on every kiosk start (including a remote restart) is safe.
+HELPER="$(dirname "$0")/adnova-kiosk-helper.sh"
+[ -f "$HELPER" ] && setsid bash "$HELPER" >/dev/null 2>&1 &
+
 # The flags, each earning its place on a 2 GB signage box:
 #   --kiosk / --start-fullscreen  full screen, no chrome, no way out
 #   --noerrdialogs / --disable-* silence every popup, prompt and nag that

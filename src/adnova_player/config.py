@@ -108,6 +108,10 @@ class Config:
         return f"{self.base_url}/api/v1/player/playback"
 
     @property
+    def screenshot_url(self) -> str:
+        return f"{self.base_url}/api/v1/player/screenshot"
+
+    @property
     def manifest_path(self) -> Path:
         return self.cache_dir / "manifest.json"
 

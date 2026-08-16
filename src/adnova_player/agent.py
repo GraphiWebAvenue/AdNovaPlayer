@@ -29,6 +29,7 @@ import json
 import logging
 import threading
 from datetime import UTC, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .api import DashboardApi
@@ -459,7 +460,22 @@ class Agent:
                 continue
             cid = entry.get("id")
             name = entry.get("command")
-            if not isinstance(cid, int) or name not in runnable:
+            if not isinstance(cid, int):
+                continue
+
+            # Two commands reach the Wayland session the player cannot touch
+            # directly, so they go through the in-session helper via a trigger
+            # file rather than a systemctl argv.
+            if name == "screenshot":
+                ok, detail = self._capture_and_upload()
+                acks.append({"id": cid, "status": "done" if ok else "error", "detail": detail})
+                continue
+            if name == "restart_kiosk":
+                ok, detail = self._request_kiosk_restart()
+                acks.append({"id": cid, "status": "done" if ok else "error", "detail": detail})
+                continue
+
+            if name not in runnable:
                 continue
 
             argv, survives = runnable[name]
@@ -518,6 +534,55 @@ class Agent:
         except (OSError, ValueError):
             return {}
         return data if isinstance(data, dict) else {}
+
+    # Exchange files with the in-session helper. The player service runs
+    # headless as its own user and cannot reach the desktop user's Wayland
+    # session, so the helper (which runs inside it) does the grab and the
+    # kiosk relaunch; the player only drops a request and reads the result.
+    _SHOT_REQ = Path("/tmp/adnova-shot.req")
+    _SHOT_OUT = Path("/tmp/adnova-shot.jpg")
+    _KIOSK_REQ = Path("/tmp/adnova-kiosk.req")
+
+    def _capture_and_upload(self) -> tuple[bool, str]:
+        """
+        Ask the in-session helper for a fresh screenshot, then upload it.
+
+        Returns (ok, detail). A device whose helper is not running or has no
+        working grabber simply times out here and reports it — a missing
+        screenshot is a diagnostic that did not arrive, never a crash.
+        """
+        try:
+            self._SHOT_REQ.write_text("")  # (re)create to stamp a fresh mtime
+        except OSError as exc:
+            return False, f"could not request a capture: {exc}"
+
+        req_mtime = self._SHOT_REQ.stat().st_mtime
+        deadline = _mono() + 8.0
+        while _mono() < deadline:
+            if self._SHOT_OUT.exists() and self._SHOT_OUT.stat().st_mtime >= req_mtime:
+                break
+            self._stop.wait(0.5)
+        else:
+            return False, "no response from the kiosk session (helper down or no grabber)"
+
+        try:
+            data = self._SHOT_OUT.read_bytes()
+        except OSError as exc:
+            return False, f"could not read the capture: {exc}"
+        if not data:
+            return False, "the capture was empty"
+
+        if self._api.send_screenshot(data):
+            return True, f"captured {max(1, len(data) // 1024)} KB"
+        return False, "the capture was taken but the upload failed"
+
+    def _request_kiosk_restart(self) -> tuple[bool, str]:
+        """Ask the in-session helper to relaunch the browser."""
+        try:
+            self._KIOSK_REQ.write_text("")
+        except OSError as exc:
+            return False, f"could not request a kiosk restart: {exc}"
+        return True, "kiosk restart requested"
 
     def _apply_emergency(self, emergency: dict | None) -> None:
         """
