@@ -68,8 +68,16 @@ MPV_ARGS = [
     "--hwdec=v4l2m2m-copy",
     "--vo=gpu",
     "--image-display-duration=inf",   # an image stays until the player moves on
-    "--keep-open=yes",                # hold the last frame rather than flashing
+    # Loop every clip. Without this a short ad plays once and freezes on its
+    # last frame (--keep-open), which reads as "the video stopped". The player
+    # still advances by changing /state — a new key triggers a fresh loadfile —
+    # so looping only fills the time until then, never overrides the schedule.
+    "--loop-file=inf",
+    "--keep-open=yes",                # last resort: hold a frame, never go black
     "--audio-fallback-to-null=yes",   # no audio sink must never stop playback
+    # A log we can read when something misbehaves on the device; --really-quiet
+    # keeps it off the screen but the file still gets the full detail.
+    "--log-file=/tmp/adnova-mpv.log",
     f"--input-ipc-server={IPC_SOCK}",
 ]
 
@@ -120,11 +128,8 @@ def show(state: dict) -> None:
 
     url = f"{PLAYER}{src}"
     mpv_send(["loadfile", url, "replace"])
-    # Loop every video: the player advances by changing /state, so looping a
-    # clip that outlasts its own length keeps the screen filled instead of
-    # black. Images ignore loop-file and rest on --image-display-duration.
-    is_video = state.get("kind") == "video"
-    mpv_send(["set_property", "loop-file", "inf" if is_video else "no"])
+    # Looping is global (--loop-file=inf); only audio is per-item. An image
+    # ignores loop and rests on --image-display-duration=inf.
     mpv_send(["set_property", "mute", "yes" if state.get("muted") else "no"])
 
 
