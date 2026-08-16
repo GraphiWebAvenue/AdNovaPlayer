@@ -132,6 +132,15 @@ class Manifest:
     # falls back to the calm built-in filler.
     fallback_media: Media | None = None
 
+    # A test broadcast an operator triggered from Dashboard: one ad to play
+    # on repeat immediately, over everything else, so a new stand can be
+    # checked without scheduling a slot and waiting for its turn. Dashboard
+    # only emits it while the test is live (it carries its own expiry there),
+    # so its mere presence here means "play this now". None the rest of the
+    # time, which is almost always.
+    test_override_media: Media | None = None
+    test_override_muted: bool = True
+
     # The document exactly as it arrived, kept so the cache can be written
     # back byte for byte. Re-serialising from the parsed fields would
     # change the canonical form — a reordered key, a differently formatted
@@ -237,6 +246,11 @@ class Manifest:
             if isinstance(raw.get("operating_hours"), dict)
             else None,
             fallback_media=_parse_fallback(raw.get("fallback")),
+            # A test override is the same media-loop shape as the fallback,
+            # so it is read on the identical download-and-verify path; only
+            # its place in the priority order differs (top, not bottom).
+            test_override_media=_parse_fallback(raw.get("test_override")),
+            test_override_muted=_block_muted(raw.get("test_override")),
             raw=raw,
         )
 
@@ -414,6 +428,19 @@ def _parse_fallback(raw: Any) -> Media | None:
         checksum_sha256=str(checksum),
         bytes=int(raw.get("bytes", 0)),
     )
+
+
+def _block_muted(raw: Any) -> bool:
+    """
+    Whether a media-loop block (fallback or test override) wants sound.
+
+    Muted unless the block explicitly opts in, matching the same safe
+    default a scheduled slot uses — a shop-window screen is silent until
+    Dashboard says the stand has speakers.
+    """
+    if not isinstance(raw, dict):
+        return True
+    return bool(raw.get("muted", True))
 
 
 def _dt(value: Any) -> datetime:

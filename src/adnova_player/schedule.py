@@ -42,6 +42,10 @@ class PlayItem:
     def is_fallback(self) -> bool:
         return self.priority == "fallback"
 
+    @property
+    def is_test(self) -> bool:
+        return self.priority == "test"
+
 
 # What the bundled loop looks like to the rest of the system: a synthetic
 # item with no slot, shown whenever nothing real can be. The browser knows
@@ -85,6 +89,32 @@ def fallback_item(media: Media | None, cache: MediaCache) -> PlayItem:
     )
 
 
+def test_item(media: Media | None, cache: MediaCache, muted: bool = True) -> PlayItem | None:
+    """
+    Build the operator's test broadcast, if its media is cached.
+
+    Returns None when there is no test or its bytes have not arrived yet —
+    the caller then falls through to the real schedule, so a test that is
+    still downloading never blanks the screen. Loops like the fallback, but
+    ranks above everything: the operator triggered it to see one ad now.
+    """
+    if media is None or not cache.has(media.checksum_sha256):
+        return None
+
+    is_video = media.type == "video"
+    return PlayItem(
+        slot_id=-2,
+        ad_id=None,  # a test never bills; ad_id stays out of the play log
+        kind="video" if is_video else "image",
+        local_src=cache.local_url_path(media.checksum_sha256),
+        muted=not is_video or muted,
+        duration_seconds=0,  # loops, so duration is irrelevant
+        priority="test",
+        label="TEST",
+        loop=True,
+    )
+
+
 class Schedule:
     """
     A verified manifest, resolved against the cache.
@@ -100,6 +130,7 @@ class Schedule:
         cache: MediaCache,
         emergency: PlayItem | None = None,
         fallback: PlayItem | None = None,
+        test: PlayItem | None = None,
     ) -> None:
         self._manifest = manifest
         self._cache = cache
@@ -107,6 +138,9 @@ class Schedule:
         # channel — a closure notice, a safety message — that preempts the
         # scheduled plan entirely while it is active.
         self._emergency = emergency
+        # An operator's test broadcast: one ad on repeat, over the schedule,
+        # while a live test is running. Ranks just below a safety takeover.
+        self._test = test
         # What fills a gap: the operator's chosen loop when one is cached,
         # or the calm built-in filler. Never a black screen.
         self._fallback = fallback or FALLBACK
@@ -133,6 +167,12 @@ class Schedule:
         # screen must say something *now*.
         if self._emergency is not None:
             return self._emergency
+
+        # A live test broadcast wins over the schedule (but not a safety
+        # takeover). Dashboard only sends one while the operator's test is
+        # running, so its presence here is the whole signal.
+        if self._test is not None:
+            return self._test
 
         if self._manifest is None:
             return self._fallback
@@ -169,10 +209,19 @@ class Schedule:
         """Every media checksum the plan still references, for cache eviction."""
         if self._manifest is None:
             return set()
-        return {
+        keep = {
             slot.media.checksum_sha256
             for slot in self._manifest.slots_to_preload(moment)
         }
+        # The gap-filler and any live test broadcast are referenced too, or
+        # eviction would delete the very file just downloaded to hold them —
+        # the browser would then request a purged /media/<checksum> and show
+        # a black frame, exactly the thing the fallback exists to prevent.
+        if self._manifest.fallback_media is not None:
+            keep.add(self._manifest.fallback_media.checksum_sha256)
+        if self._manifest.test_override_media is not None:
+            keep.add(self._manifest.test_override_media.checksum_sha256)
+        return keep
 
     def is_exhausted(self, moment: datetime) -> bool:
         """True once the plan has nothing left to say about the future."""

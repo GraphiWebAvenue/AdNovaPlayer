@@ -37,7 +37,7 @@ from .health import read as read_health
 from .hours import screen_should_be_on
 from .manifest import Manifest, UntrustedManifest
 from .playback_log import Entry, PlaybackLog, now_iso
-from .schedule import FALLBACK, PlayItem, Schedule, fallback_item
+from .schedule import FALLBACK, PlayItem, Schedule, fallback_item, test_item
 from .screen import Screen
 
 log = logging.getLogger("adnova.agent")
@@ -83,6 +83,10 @@ class Agent:
         # the built-in filler until a manifest names one.
         self._fallback: PlayItem = FALLBACK
 
+        # A live test broadcast, when the operator has one running. Rebuilt on
+        # each fetch from the manifest; None whenever no test is active.
+        self._test: PlayItem | None = None
+
         # Whether the last heartbeat reached Dashboard, for the admin page.
         self._last_contact_ok = False
 
@@ -109,12 +113,15 @@ class Agent:
             if self._emergency is None:
                 return self._schedule
             # Rebuild a view with the takeover layered on, without mutating
-            # the stored plan — the takeover is transient.
+            # the stored plan — the takeover is transient. The test override
+            # is already baked into the stored plan, but carry it here too so
+            # it survives while an emergency view is being composed.
             return Schedule(
                 self._schedule.manifest,
                 self._cache,
                 emergency=self._emergency,
                 fallback=self._fallback,
+                test=self._test,
             )
 
     def on_playing(self, item: PlayItem) -> None:
@@ -177,9 +184,15 @@ class Agent:
         )
         if manifest is not None:
             fallback = fallback_item(manifest.fallback_media, self._cache)
+            test = test_item(
+                manifest.test_override_media, self._cache, manifest.test_override_muted
+            )
             with self._lock:
-                self._schedule = Schedule(manifest, self._cache, fallback=fallback)
+                self._schedule = Schedule(
+                    manifest, self._cache, fallback=fallback, test=test
+                )
                 self._fallback = fallback
+                self._test = test
                 self._operating_hours = manifest.operating_hours
                 self._timezone = manifest.timezone or "UTC"
             log.info("Loaded cached plan (version %s).", manifest.schedule_version)
@@ -238,13 +251,29 @@ class Agent:
                 size_bytes=manifest.fallback_media.bytes,
             ))
 
+        # A test broadcast is downloaded on the same path, so hitting "play
+        # now" in Dashboard puts the ad on screen as soon as its bytes land
+        # rather than after the operator schedules and waits for a slot.
+        if manifest.test_override_media is not None:
+            self._cache.ensure(MediaNeed(
+                url=manifest.test_override_media.url,
+                checksum_sha256=manifest.test_override_media.checksum_sha256,
+                size_bytes=manifest.test_override_media.bytes,
+            ))
+
         manifest.save(self._config.manifest_path)
 
         fallback = fallback_item(manifest.fallback_media, self._cache)
+        test = test_item(
+            manifest.test_override_media, self._cache, manifest.test_override_muted
+        )
 
         with self._lock:
-            self._schedule = Schedule(manifest, self._cache, fallback=fallback)
+            self._schedule = Schedule(
+                manifest, self._cache, fallback=fallback, test=test
+            )
             self._fallback = fallback
+            self._test = test
             # Operating hours and timezone travel with the manifest, so the
             # screen-power decision needs no separate fetch and works offline.
             self._operating_hours = manifest.operating_hours
