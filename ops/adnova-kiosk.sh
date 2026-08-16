@@ -33,6 +33,26 @@ for _ in $(seq 1 60); do
     sleep 1
 done
 
+# Cap every connected output at 1080p. The kernel video= param does not stick
+# on Wayland — the compositor re-reads EDID and picks the panel's native mode,
+# often 4K — so it has to be set here, in the session, on every start. A Pi 4
+# renders 1080p smoothly but stutters scaling frames to 4K even with hardware
+# decode, so this is what keeps playback smooth on whatever panel a stand has.
+if command -v wlr-randr >/dev/null 2>&1; then
+    for out in $(wlr-randr 2>/dev/null | awk '/^[A-Za-z0-9]/{print $1}'); do
+        wlr-randr --output "$out" --mode 1920x1080 >/dev/null 2>&1 || true
+    done
+fi
+
+# Route audio to HDMI. The default sink can land on the 3.5mm jack, leaving
+# the video silent. Find the HDMI sink and make it the default — its numeric
+# id is assigned fresh each boot, so re-find it here rather than hard-code one.
+if command -v wpctl >/dev/null 2>&1; then
+    sink="$(wpctl status 2>/dev/null | sed -n '/Sinks:/,/Sources:/p' \
+        | grep -i hdmi | grep -oE '[0-9]+' | head -1)"
+    [ -n "$sink" ] && wpctl set-default "$sink" >/dev/null 2>&1 || true
+fi
+
 # Start the in-session helper that answers the player's screenshot and
 # restart requests — it needs this Wayland session, which the headless player
 # process cannot reach. It locks itself to one instance, so launching it on
