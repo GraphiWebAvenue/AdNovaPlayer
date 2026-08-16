@@ -124,6 +124,12 @@ def build_app(
             return FileResponse(fallback_path)
         return HTMLResponse(_FALLBACK_HTML)
 
+    @app.get("/favicon.ico")
+    def favicon() -> Response:
+        # Answered rather than left to 404, so the browser never shows a
+        # loading or broken-icon flash while it retries a missing favicon.
+        return Response(status_code=204)
+
     @app.get("/healthz")
     def healthz() -> JSONResponse:
         # For the watchdog and the admin page to confirm the server itself
@@ -145,7 +151,7 @@ _KIOSK_HTML = """<!doctype html>
 <title>AdNova</title>
 <!-- An empty favicon so the browser never fires a 404 request that could
      flash a loading indicator. -->
-<link rel="icon" href="data:,">
+<link rel="icon" href="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
 <style>
   :root { color-scheme: dark; }
   html, body {
@@ -189,17 +195,18 @@ _KIOSK_HTML = """<!doctype html>
 (() => {
   "use strict";
 
-  // Two layers, swapped on each change so the outgoing media fades out as
-  // the incoming one fades in. The outgoing element is torn down the moment
-  // the fade ends, so a video never keeps decoding behind the scenes — two
-  // simultaneous decodes is exactly what makes a Pi stutter.
+  // Two layers so an image change can crossfade; a video change is a clean
+  // cut, because fading a decoding video is expensive on a Pi and is what
+  // made playback stutter. The outgoing element is always torn down so a
+  // video never keeps decoding off-screen — two decodes at once is the
+  // other thing that made it stutter.
   const layers = [document.getElementById("a"), document.getElementById("b")];
   const splash = document.getElementById("splash");
   let front = 0;
   let currentKey = null;
-  let timer = null;
+  let pollTimer = null;
 
-  const keyOf = (s) => s ? `${s.slot_id}:${s.src}:${s.schedule_version}` : null;
+  const keyOf = (s) => s ? (s.slot_id + ":" + s.src + ":" + s.schedule_version) : null;
 
   async function poll() {
     let state;
@@ -207,9 +214,8 @@ _KIOSK_HTML = """<!doctype html>
       const res = await fetch("/state", { cache: "no-store" });
       state = await res.json();
     } catch (e) {
-      // The local server is briefly unavailable (a restart). Keep showing
-      // whatever is on screen and try again shortly; never blank.
-      schedule(2000);
+      // The local server restarted; keep the screen as it is and retry.
+      arm(2000);
       return;
     }
 
@@ -218,15 +224,15 @@ _KIOSK_HTML = """<!doctype html>
       currentKey = key;
       show(state);
     }
-
-    schedule(nextPollMs(state));
+    arm(nextPollMs(state));
   }
 
   function nextPollMs(state) {
     const floor = 1000, ceil = 15000;
-    // A looping fallback never changes on its own; poll it slowly so we
-    // notice when real content returns without hammering the server.
-    if (state.loop) return 4000;
+    // A looping fallback never changes on its own; a video advances itself
+    // on its "ended" event, so both just need a slow safety poll. An image
+    // is driven by the schedule's next_change_at.
+    if (state.loop || state.kind === "video") return ceil;
     if (state.next_change_at) {
       const dt = new Date(state.next_change_at) - new Date(state.server_time);
       if (isFinite(dt) && dt > 0) return Math.min(ceil, Math.max(floor, dt + 200));
@@ -234,9 +240,9 @@ _KIOSK_HTML = """<!doctype html>
     return Math.min(ceil, Math.max(floor, (state.duration_seconds || 10) * 1000));
   }
 
-  function schedule(ms) {
-    clearTimeout(timer);
-    timer = setTimeout(poll, ms);
+  function arm(ms) {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, ms);
   }
 
   function show(state) {
@@ -249,14 +255,21 @@ _KIOSK_HTML = """<!doctype html>
 
     if (!state.is_fallback) splash.classList.add("hidden");
 
-    // Bring the back layer forward, drop the old one, then tear the old
-    // one down once the fade has finished so its video stops decoding.
-    requestAnimationFrame(() => {
+    if (state.kind === "video") {
+      // Clean cut: show the new layer at once and drop the old, no fade
+      // over a decoding frame.
       back.classList.add("show");
       oldFront.classList.remove("show");
       front = 1 - front;
-      setTimeout(() => teardown(oldFront), 520);
-    });
+      teardown(oldFront);
+    } else {
+      requestAnimationFrame(() => {
+        back.classList.add("show");
+        oldFront.classList.remove("show");
+        front = 1 - front;
+        setTimeout(() => teardown(oldFront), 520);
+      });
+    }
   }
 
   function teardown(layer) {
@@ -277,16 +290,21 @@ _KIOSK_HTML = """<!doctype html>
     const v = document.createElement("video");
     v.src = state.src;
     v.autoplay = true;
-    v.muted = !!state.muted;         // sound only when the manifest allows it
-    v.loop = !!state.loop;           // the fallback loops; a slot plays once
+    v.muted = !!state.muted;       // sound only when the manifest allows it
+    v.loop = !!state.loop;         // the fallback loops; a scheduled video plays once
     v.playsInline = true;
     v.preload = "auto";
-    v.disablePictureInPicture = true;
     v.controls = false;
-    // Start playback as soon as there is enough to show, so there is no
-    // frozen first frame while the rest buffers.
-    v.addEventListener("canplay", () => { v.play().catch(() => {}); }, { once: true });
-    v.play().catch(() => {});
+    v.disablePictureInPicture = true;
+    // A scheduled video advances the instant it finishes, so it always
+    // plays to the end and the next thing follows with no black hold and
+    // no early cut — the switch is driven by the video, not a timer.
+    if (!v.loop) {
+      v.addEventListener("ended", () => { currentKey = null; poll(); }, { once: true });
+    }
+    const go = () => v.play().catch(() => {});
+    v.addEventListener("canplay", go, { once: true });
+    go();
     return v;
   }
 

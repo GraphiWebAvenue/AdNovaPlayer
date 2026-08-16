@@ -81,9 +81,11 @@ exec "$BROWSER" \
     --disable-notifications \
     --hide-scrollbars \
     --ozone-platform=wayland \
+    --use-gl=egl \
     --ignore-gpu-blocklist \
     --enable-gpu-rasterization \
     --enable-zero-copy \
-    --canvas-oop-rasterization \
-    --enable-features=UseOzonePlatform,VaapiVideoDecoder,VaapiVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxGL,CanvasOopRasterization \
+    --enable-accelerated-video-decode \
+    --enable-accelerated-mjpeg-decode \
+    --enable-features=UseOzonePlatform,VaapiVideoDecoder,VaapiVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxGL \
     --disable-features=Translate,TranslateUI,MediaRouter,UseChromeOSDirectVideoDecoder
