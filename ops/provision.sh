@@ -97,7 +97,13 @@ if [ ! -x "$BASE/venv/bin/python" ]; then
 fi
 blue "installing dependencies"
 "$BASE/venv/bin/pip" install --quiet --upgrade pip
-"$BASE/venv/bin/pip" install --quiet "$BASE/current"
+# Editable install: the venv imports straight from current/src, so a later
+# `git reset` takes effect on the next restart with no rebuild. This avoids
+# the whole class of "the code updated but the running player did not" bugs —
+# a non-editable install copies the code into the venv, and setuptools' build
+# cache (keyed on file mtime) served stale copies whenever the Pi's clock
+# jumped, shipping a main.py/api.py that no longer matched the source.
+"$BASE/venv/bin/pip" install --quiet -e "$BASE/current"
 
 # ── Credentials ─────────────────────────────────────────────────────────
 #
