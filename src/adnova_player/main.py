@@ -56,6 +56,9 @@ def build(config: Config) -> tuple[Agent, object]:
         cache,
         current_schedule=agent.schedule,
         on_playing=agent.on_playing,
+        # Resolve "what plays now" against Dashboard's true time, corrected for
+        # a wrong device clock, so a Pi with no RTC still plays the right slot.
+        now=agent._trusted_now,
     )
 
     # The on-site status page, behind the admin login.

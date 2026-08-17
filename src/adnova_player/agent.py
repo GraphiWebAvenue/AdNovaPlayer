@@ -29,7 +29,7 @@ import json
 import logging
 import os
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -81,6 +81,18 @@ class Agent:
         self._open_play: tuple[int, str, datetime, float | None] | None = None
         # Wall clock for measuring played duration; injectable for tests.
         self._now = lambda: datetime.now(tz=UTC)
+        # How far this device's own clock sits from Dashboard's true time,
+        # learned from the signed manifest's server_time on every fetch. Added
+        # to the wall clock (see _trusted_now) so slots resolve at the right
+        # instant even on a Pi with no RTC and NTP down — "advance from the
+        # last known good time", exactly as the working rules require. A
+        # constant offset cancels out of any duration measured as a difference,
+        # so only absolute-time slot decisions use the corrected clock.
+        self._clock_offset = timedelta(0)
+        # The raw skew last seen (device minus Dashboard), reported so an
+        # operator sees a stand whose NTP is broken even while we correct it.
+        # None until the first successful fetch.
+        self._clock_skew_seconds: float | None = None
 
         # A live takeover and the stand's operating hours, both refreshed
         # from what Dashboard sends. The manifest carries the hours; the
@@ -145,6 +157,28 @@ class Agent:
                 test=self._test,
                 offline_expired=offline,
             )
+
+    def _trusted_now(self) -> datetime:
+        """
+        The wall clock corrected by the offset learned from Dashboard's signed
+        server_time. Use this for every absolute-time decision about what plays
+        now, so a wrong device clock never plays the wrong slot. Duration
+        measurements keep using the raw clock, where a constant offset cancels.
+        """
+        return self._now() + self._clock_offset
+
+    def _learn_clock(self, manifest: Manifest, at: datetime) -> None:
+        """
+        Correct our clock from the signed manifest's server_time.
+
+        server_time is covered by the signature, so it is trusted; the small
+        transit between Dashboard stamping it and us reading it is well inside
+        the schedule's second-level granularity. Replays are already refused by
+        the monotonic schedule-version check, so a stale server_time cannot be
+        fed in here to shift the clock backwards.
+        """
+        self._clock_skew_seconds = (at - manifest.server_time).total_seconds()
+        self._clock_offset = manifest.server_time - at
 
     def _offline_expired(self, manifest: Manifest | None) -> bool:
         """
@@ -319,7 +353,11 @@ class Agent:
             log.warning("Manifest did not parse (%s); keeping the current plan.", exc)
             return self._config.manifest_poll_seconds
 
-        moment = datetime.now(tz=UTC)
+        # Learn the clock offset from this signed manifest first, so every
+        # time-based decision below (which slots to preload, what to keep)
+        # anchors on Dashboard's true time, not the device's possibly-wrong one.
+        self._learn_clock(manifest, self._now())
+        moment = self._trusted_now()
 
         # Download the preload horizon before installing the plan, so a slot
         # never goes live before its bytes are on disk.
@@ -834,6 +872,14 @@ class Agent:
             "cpu_percent": health.cpu_percent,
             "mem_percent": health.mem_percent,
             "network_ok": True,  # we only get here having reached Dashboard
+            # How far the device's own clock is from Dashboard's (device minus
+            # server, seconds). We correct for it internally; this is reported
+            # so an operator can spot a stand whose NTP has quietly failed.
+            # Null until the first successful fetch has taught us the offset.
+            "clock_offset_seconds": (
+                round(self._clock_skew_seconds, 1)
+                if self._clock_skew_seconds is not None else None
+            ),
             "media_missing_count": 0,
             "pending_log_entries": self._playback.pending(),
             "last_error": "; ".join(health.warnings) or None,

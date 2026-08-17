@@ -210,6 +210,52 @@ def test_the_heartbeat_display_is_null_without_a_driver_report(tmp_path):
     assert body["display"] is None
 
 
+def test_the_clock_offset_is_learned_from_the_signed_server_time(tmp_path):
+    from tests.test_schedule import manifest_with, slot
+
+    agent, _ = make_agent(tmp_path)
+    # This device's own clock is an hour behind Dashboard's true time.
+    device_now = NOW - timedelta(hours=1)
+    agent._now = lambda: device_now
+    m = manifest_with([slot(1, NOW, NOW + timedelta(hours=1), "a" * 64)])  # server_time = NOW
+
+    agent._learn_clock(m, agent._now())
+
+    assert round(agent._clock_skew_seconds) == -3600      # device is 1h slow
+    assert agent._trusted_now() == NOW                    # corrected back to true time
+
+
+def test_a_wrong_device_clock_still_resolves_the_right_slot(tmp_path):
+    from adnova_player.schedule import Schedule
+    from tests.test_schedule import manifest_with, slot
+
+    agent, _ = make_agent(tmp_path)
+    csum = "a" * 64
+    agent._cache.is_playable = lambda c: c == csum
+    m = manifest_with([slot(1, NOW, NOW + timedelta(hours=1), csum)])  # live at true-now
+    agent._now = lambda: NOW - timedelta(hours=3)          # clock 3h behind
+    agent._learn_clock(m, agent._now())
+    sched = Schedule(m, agent._cache)
+
+    # Raw device time thinks the slot is still in the future → fallback...
+    assert sched.now_playing(agent._now()).is_fallback
+    # ...but the corrected clock sees it live and plays it.
+    assert sched.now_playing(agent._trusted_now()).slot_id == 1
+
+
+def test_the_heartbeat_reports_clock_offset_only_after_a_fetch(tmp_path):
+    from tests.test_schedule import manifest_with, slot
+
+    agent, _ = make_agent(tmp_path)
+    assert agent._heartbeat_body()["clock_offset_seconds"] is None   # never synced yet
+
+    agent._now = lambda: NOW - timedelta(seconds=90)                 # 90s slow
+    agent._learn_clock(manifest_with([slot(1, NOW, NOW + timedelta(hours=1), "a" * 64)]),
+                       agent._now())
+
+    assert agent._heartbeat_body()["clock_offset_seconds"] == -90.0
+
+
 def test_uploaded_playback_is_acked(tmp_path):
     api = FakeApi()
     agent, playback = make_agent(tmp_path, api)
