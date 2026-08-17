@@ -65,6 +65,45 @@ class PlaybackLog:
             self._entries.append(entry)
             self._flush()
 
+    def finalize(
+        self,
+        slot_id: int,
+        started_at: str,
+        ended_at: str,
+        played_seconds: float,
+        outcome: str = "played",
+        detail: str | None = None,
+    ) -> None:
+        """
+        Close an open entry (one recorded on start with ended_at=None) with
+        its real end time, duration, and outcome. Matched on
+        (slot_id, started_at) so a re-flushed/reloaded ring still finds it.
+
+        Recording on start and finalizing on end means a device that loses
+        power mid-play still billed the impression (as an open `played`),
+        while a device that runs normally gets accurate duration + a
+        `partial` mark when a slot was cut short.
+        """
+        with self._lock:
+            for i, e in enumerate(self._entries):
+                if (
+                    e.slot_id == slot_id
+                    and e.started_at == started_at
+                    and e.ended_at is None
+                ):
+                    self._entries[i] = Entry(
+                        slot_id=e.slot_id,
+                        ad_id=e.ad_id,
+                        started_at=e.started_at,
+                        ended_at=ended_at,
+                        outcome=outcome,
+                        played_seconds=played_seconds,
+                        schedule_version=e.schedule_version,
+                        detail=detail or e.detail,
+                    )
+                    self._flush()
+                    return
+
     def pending(self) -> int:
         with self._lock:
             return len(self._entries)

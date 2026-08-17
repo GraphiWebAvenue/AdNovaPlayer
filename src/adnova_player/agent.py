@@ -74,6 +74,12 @@ class Agent:
         # changes. Guarded by the same lock.
         self._current: PlayItem | None = None
         self._last_logged_slot: int | None = None
+        # The slot currently open in the playback log (recorded on start,
+        # closed with its real duration + outcome when it ends):
+        # (slot_id, started_iso, started_dt, duration_seconds | None).
+        self._open_play: tuple[int, str, datetime, float | None] | None = None
+        # Wall clock for measuring played duration; injectable for tests.
+        self._now = lambda: datetime.now(tz=UTC)
 
         # A live takeover and the stand's operating hours, both refreshed
         # from what Dashboard sends. The manifest carries the hours; the
@@ -134,26 +140,76 @@ class Agent:
         This is where a real slot becomes a billable play. A slot is
         logged once, when it first appears — not on every poll — so a
         30-second image polled five times is one impression, not five.
+
+        The entry is recorded on start (so a power loss mid-play still
+        bills it) and *closed* when the slot ends, with its real played
+        duration and outcome: `played` if it ran ~its full length,
+        `partial` if it was cut short (e.g. a test broadcast preempted
+        it). A slot displaced before it ever reaches the screen is never
+        recorded, so it is never billed — matching R16.
         """
+        to_record: Entry | None = None
         with self._lock:
             self._current = item
 
+            same_real_slot = (
+                not item.is_fallback
+                and item.ad_id is not None
+                and item.slot_id == self._last_logged_slot
+            )
+            # Anything other than "still the same real slot" closes the
+            # open play (a gap, a test/emergency, or the next slot).
+            if not same_real_slot and self._open_play is not None:
+                self._finalize_open(self._now())
+
             if item.is_fallback or item.ad_id is None:
+                # Not a billable slot. Clear the marker so the next real
+                # slot logs even if it happens to share an id.
+                self._last_logged_slot = None
                 return
             if item.slot_id == self._last_logged_slot:
                 return
 
             self._last_logged_slot = item.slot_id
             version = self._schedule.schedule_version
+            started = now_iso()
+            self._open_play = (
+                item.slot_id, started, self._now(),
+                item.duration_seconds,
+            )
+            to_record = Entry(
+                slot_id=item.slot_id,
+                ad_id=item.ad_id,
+                started_at=started,
+                ended_at=None,
+                outcome="played",
+                schedule_version=version,
+            )
 
-        self._playback.record(Entry(
-            slot_id=item.slot_id,
-            ad_id=item.ad_id,
-            started_at=now_iso(),
-            ended_at=None,
-            outcome="played",
-            schedule_version=version,
-        ))
+        if to_record is not None:
+            self._playback.record(to_record)
+
+    def _finalize_open(self, ended: datetime) -> None:
+        """
+        Close the currently-open play with its real duration + outcome.
+
+        Called while holding self._lock; the playback log has its own
+        lock, so this does not deadlock.
+        """
+        open_play = self._open_play
+        self._open_play = None
+        if open_play is None:
+            return
+        slot_id, started_iso, started_dt, duration = open_play
+        played = max(0.0, (ended - started_dt).total_seconds())
+        outcome = "played" if (not duration or played >= 0.9 * duration) else "partial"
+        self._playback.finalize(
+            slot_id=slot_id,
+            started_at=started_iso,
+            ended_at=ended.isoformat(),
+            played_seconds=round(played, 1),
+            outcome=outcome,
+        )
 
     # ── Startup ──────────────────────────────────────────────────────────
 

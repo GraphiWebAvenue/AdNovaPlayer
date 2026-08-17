@@ -97,6 +97,68 @@ def test_the_fallback_is_never_billed(tmp_path):
     assert playback.pending() == 0
 
 
+def _fixed_clock(agent, start):
+    """Give the agent a controllable wall clock; return a setter."""
+    box = {"now": start}
+    agent._now = lambda: box["now"]
+    return box
+
+
+def test_a_finished_slot_is_closed_with_duration_and_played(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    agent, playback = make_agent(tmp_path)
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    clock = _fixed_clock(agent, t0)
+
+    agent.on_playing(played(1))                 # opens slot 1 (30s)
+    clock["now"] = t0 + timedelta(seconds=30)   # ran its full length
+    agent.on_playing(played(2))                 # slot 1 ends, slot 2 opens
+
+    entries = playback.take_batch()
+    first = next(e for e in entries if e.slot_id == 1)
+    assert first.ended_at is not None
+    assert first.outcome == "played"
+    assert first.played_seconds == 30.0
+    # The now-playing slot 2 is still open (not yet finalized).
+    second = next(e for e in entries if e.slot_id == 2)
+    assert second.ended_at is None
+
+
+def test_a_slot_cut_short_is_partial(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    agent, playback = make_agent(tmp_path)
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    clock = _fixed_clock(agent, t0)
+
+    agent.on_playing(played(1))                 # 30s slot
+    clock["now"] = t0 + timedelta(seconds=5)    # only 5s on screen
+    agent.on_playing(played(2))
+
+    first = next(e for e in playback.take_batch() if e.slot_id == 1)
+    assert first.outcome == "partial"
+    assert first.played_seconds == 5.0
+
+
+def test_a_gap_closes_the_open_slot_but_is_not_billed(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    agent, playback = make_agent(tmp_path)
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    clock = _fixed_clock(agent, t0)
+
+    agent.on_playing(played(1))
+    clock["now"] = t0 + timedelta(seconds=30)
+    agent.on_playing(FALLBACK)                  # a gap ends slot 1
+
+    entries = playback.take_batch()
+    assert len(entries) == 1                    # fallback itself not billed
+    assert entries[0].slot_id == 1
+    assert entries[0].ended_at is not None
+    assert entries[0].outcome == "played"
+
+
 def test_the_heartbeat_carries_health_and_state(tmp_path):
     api = FakeApi(heartbeat={"ok": True})
     agent, _ = make_agent(tmp_path, api)
