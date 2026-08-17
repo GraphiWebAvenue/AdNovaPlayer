@@ -195,7 +195,18 @@ class Schedule:
         if slot is None:
             return self._fallback
 
-        return self._resolve(slot) or self._fallback
+        # The slot is due but its bytes have not finished downloading. Rather
+        # than cut straight to the house loop for the few seconds that takes,
+        # hold on the most recent ad that IS cached — a real, recently-shown
+        # advertisement reads far better in a shop window than the filler. It
+        # is shown unbilled (ad_id dropped, fallback priority), so a download
+        # hiccup never turns into a phantom impression the advertiser is
+        # charged for. Only then, if nothing is cached at all, the house loop.
+        return (
+            self._resolve(slot)
+            or self._recent_cached_filler(moment, skip=slot.slot_id)
+            or self._fallback
+        )
 
     def next_change_after(self, moment: datetime) -> datetime | None:
         """
@@ -242,6 +253,44 @@ class Schedule:
         return self._manifest is None or self._manifest.is_exhausted(moment)
 
     # ── Internals ────────────────────────────────────────────────────────
+
+    def _recent_cached_filler(self, moment: datetime, skip: int) -> PlayItem | None:
+        """
+        The most recent already-started slot whose media is cached, as an
+        unbilled hold for a transient download gap on the current slot.
+
+        Returns None when nothing earlier is cached — the first slots of a
+        fresh plan, before any media has landed — so the caller falls through
+        to the house loop. The chosen ad is stripped of its ad_id and given
+        fallback priority: it fills the screen but is never counted as a play.
+        """
+        if self._manifest is None:
+            return None
+
+        candidate: Slot | None = None
+        for slot in self._manifest.slots:
+            if slot.slot_id == skip or slot.starts_at > moment:
+                continue
+            if not self._cache.is_playable(slot.media.checksum_sha256):
+                continue
+            if candidate is None or slot.starts_at > candidate.starts_at:
+                candidate = slot
+
+        if candidate is None:
+            return None
+
+        is_video = candidate.media.type == "video"
+        return PlayItem(
+            slot_id=-1,
+            ad_id=None,  # an unbilled hold; never counted as an impression
+            kind="video" if is_video else "image",
+            local_src=self._cache.local_url_path(candidate.media.checksum_sha256),
+            muted=True,  # a gap-filler is silent, like the house loop
+            duration_seconds=0,  # loops until the real slot's media arrives
+            priority="fallback",
+            label=candidate.label,
+            loop=True,
+        )
 
     def _resolve(self, slot: Slot) -> PlayItem | None:
         """A slot becomes a PlayItem only if its media is cached and valid."""

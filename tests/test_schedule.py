@@ -147,6 +147,44 @@ def test_preload_checksums_lists_the_upcoming_media():
     assert schedule.preload_checksums(NOW) == {a, b}
 
 
+def test_a_downloading_slot_holds_the_last_cached_ad_unbilled():
+    # Slot 2 is due but its bytes are still on the wire; slot 1's ad is cached.
+    # The screen holds slot 1's ad rather than cutting to the house loop —
+    # and does so unbilled, so the hiccup is never a phantom impression.
+    prev, cur = "a" * 64, "b" * 64
+    m = manifest_with([
+        slot(1, NOW - timedelta(minutes=10), NOW - timedelta(minutes=5), prev),
+        slot(2, NOW - timedelta(minutes=1), NOW + timedelta(minutes=5), cur),
+    ])
+    item = Schedule(m, FakeCache({prev})).now_playing(NOW)
+
+    assert item.is_fallback                       # fallback priority → not billed
+    assert item.ad_id is None
+    assert item.local_src == f"/media/{prev}"     # the recent real ad, not filler
+
+
+def test_a_downloading_slot_with_nothing_cached_shows_the_house_loop():
+    # No earlier ad has landed either, so the ladder has nothing to hold and
+    # the built-in dark filler covers the gap.
+    cur = "b" * 64
+    m = manifest_with([slot(1, NOW - timedelta(minutes=1), NOW + timedelta(minutes=5), cur)])
+    item = Schedule(m, FakeCache(set())).now_playing(NOW)
+
+    assert item.is_fallback
+    assert item.local_src == "/fallback"
+
+
+def test_a_true_gap_shows_the_house_loop_not_a_replay():
+    # After the last slot ends there is no current slot at all — a genuine gap
+    # between campaigns, not a download hiccup — so we show the house loop and
+    # never replay a finished ad.
+    past = "a" * 64
+    m = manifest_with([slot(1, NOW - timedelta(hours=2), NOW - timedelta(hours=1), past)])
+    item = Schedule(m, FakeCache({past})).now_playing(NOW)
+
+    assert item.local_src == "/fallback"
+
+
 def test_offline_expired_forces_the_default_over_a_covered_slot():
     # A slot that still covers the moment would normally play...
     csum = "d" * 64
