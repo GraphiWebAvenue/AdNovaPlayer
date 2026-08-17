@@ -96,6 +96,10 @@ def main() -> int:
         )
 
     agent, app = build(config)
+    # Look ourselves over before opening for business: the result is logged
+    # here and rides every heartbeat, but a failed check never stops us — a
+    # signage box shows something before it complains.
+    agent.run_self_test()
     agent.start()
 
     # Tell systemd we are up, then feed its watchdog only while the loops

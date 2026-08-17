@@ -35,6 +35,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .api import DashboardApi
+from . import diagnostics
 from .cache import MediaCache, MediaNeed
 from .config import Config
 from .health import read as read_health
@@ -78,6 +79,11 @@ class Agent:
         # removes anyway.
         self._auth_failure_limit = 10
         self._auth_lost_fired = False
+
+        # The boot self-test result, filled by run_self_test() at start-up and
+        # reported on every heartbeat so a stand that came up degraded (no mpv,
+        # a read-only card) is visible without a site visit.
+        self._boot_checks: list[diagnostics.Check] = []
 
         self._lock = threading.Lock()
         self._schedule = Schedule(None, cache)
@@ -755,6 +761,40 @@ class Agent:
             return False, f"could not request a display restart: {exc}"
         return True, "display restart requested"
 
+    def run_self_test(self) -> list[diagnostics.Check]:
+        """
+        Run the boot self-test, log any failures, and keep the result.
+
+        Called once at start-up. Never blocks the player — a degraded stand
+        still shows something — but every failure is logged and then carried
+        on the heartbeat so an operator sees it.
+        """
+        self._boot_checks = diagnostics.run_self_test(
+            stand_id=self._config.stand_id,
+            cache_dir=self._config.cache_dir,
+            has_trusted_keys=bool(self._config.trusted_keys),
+        )
+        for check in self._boot_checks:
+            if not check.ok:
+                level = log.error if check.severity == "critical" else log.warning
+                level("Boot self-test: %s — %s", check.name, check.detail)
+        return self._boot_checks
+
+    def diagnostics_bundle(self) -> dict:
+        """A redacted diagnostics bundle for the admin page or an operator pull."""
+        health = read_health(self._config.cache_dir, self._cache.used_bytes())
+        return diagnostics.redacted_bundle(
+            stand_id=self._config.stand_id,
+            player_version=_version(),
+            checks=self._boot_checks,
+            health={
+                "temp_c": health.temp_c,
+                "disk_free_bytes": health.disk_free_bytes,
+                "storage_writable": health.storage_writable,
+                "warnings": health.warnings,
+            },
+        )
+
     def _handle_auth_lost(self) -> None:
         """
         Act, once, on a stand key that has been rejected past the limit.
@@ -950,6 +990,9 @@ class Agent:
             # (Feature: media pre-validation), so Dashboard can flag a stand
             # holding media it cannot actually play.
             "undecodable_count": self._cache.undecodable_count(),
+            # Which boot self-test checks failed (empty when all passed), so a
+            # stand that came up degraded is visible without a site visit.
+            "self_test_failures": diagnostics.failures(self._boot_checks),
         }
 
     def _take_acks(self) -> list[dict]:

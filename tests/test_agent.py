@@ -202,6 +202,21 @@ def test_the_heartbeat_reports_verified_display_health(tmp_path):
     assert "undecodable_count" in body
 
 
+def test_the_heartbeat_reports_boot_self_test_failures(tmp_path):
+    from adnova_player import diagnostics
+
+    agent, _ = make_agent(tmp_path)
+    assert agent._heartbeat_body()["self_test_failures"] == []   # not run yet
+
+    # A box with no binaries and no keys: criticals and warnings both surface.
+    agent._boot_checks = diagnostics.run_self_test(
+        stand_id=3, cache_dir=tmp_path, has_trusted_keys=False,
+        which=lambda name: None,
+    )
+    failures = agent._heartbeat_body()["self_test_failures"]
+    assert "player" in failures and "decoder" in failures and "signing" in failures
+
+
 def test_the_heartbeat_display_is_null_without_a_driver_report(tmp_path):
     agent, _ = make_agent(tmp_path)
     agent._display_state_path = str(tmp_path / "missing.json")
