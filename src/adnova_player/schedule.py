@@ -230,6 +230,27 @@ class Schedule:
 
         return min(candidates) if candidates else None
 
+    def upcoming(self, moment: datetime) -> PlayItem | None:
+        """
+        The next scheduled item after the one on screen now, resolved and
+        cached — for the display to open ahead of time so the switch has no
+        black flash.
+
+        Returns None whenever there is nothing safe to preload: an override is
+        active (a takeover, a live test, or the offline default — then what
+        plays next is not the schedule's next slot), there is no next slot, or
+        the next slot's media has not downloaded yet. Preloading a file that
+        is not cached would only reintroduce the flash it exists to remove.
+        """
+        if self._emergency is not None or self._test is not None or self._offline_expired:
+            return None
+        if self._manifest is None:
+            return None
+        nxt = self._manifest.next_slot_after(moment)
+        if nxt is None:
+            return None
+        return self._resolve(nxt)
+
     def preload_checksums(self, moment: datetime) -> set[str]:
         """Every media checksum the plan still references, for cache eviction."""
         if self._manifest is None:

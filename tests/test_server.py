@@ -86,6 +86,71 @@ def test_state_falls_back_when_nothing_is_cached(tmp_path):
     assert state["is_fallback"] is True
 
 
+def test_state_advertises_the_next_cached_slot_to_preload(tmp_path):
+    a_body, b_body = b"first-ad", b"second-ad"
+    a, b = sha(a_body), sha(b_body)
+    manifest = Manifest.parse({
+        "contract_version": "player_manifest.v1",
+        "stand_id": 3,
+        "schedule_version": 9,
+        "server_time": NOW.isoformat(),
+        "window": {"from": NOW.isoformat(), "to": (NOW + timedelta(hours=1)).isoformat()},
+        "slots": [
+            {"slot_id": 1, "ad_id": 10,
+             "starts_at": (NOW - timedelta(minutes=1)).isoformat(),
+             "ends_at": (NOW + timedelta(minutes=5)).isoformat(),
+             "duration_seconds": 360, "priority": "manual",
+             "media": {"url": "https://x/1", "type": "image", "checksum_sha256": a}},
+            {"slot_id": 2, "ad_id": 20,
+             "starts_at": (NOW + timedelta(minutes=5)).isoformat(),
+             "ends_at": (NOW + timedelta(minutes=10)).isoformat(),
+             "duration_seconds": 300, "priority": "manual",
+             "media": {"url": "https://x/2", "type": "video", "checksum_sha256": b}},
+        ],
+    })
+    cache = MediaCache(tmp_path / "media")
+    cache.path_for(a).write_bytes(a_body)
+    cache.path_for(b).write_bytes(b_body)
+    app = build_app(cache, lambda: Schedule(manifest, cache), now=lambda: NOW)
+
+    state = TestClient(app).get("/state").json()
+
+    assert state["slot_id"] == 1                 # slot 1 is on screen
+    assert state["next_src"] == f"/media/{b}"    # slot 2 is advertised to preload
+    assert state["next_kind"] == "video"
+
+
+def test_state_advertises_no_next_when_it_is_uncached(tmp_path):
+    a_body, b_body = b"first-ad", b"second-ad"
+    a, b = sha(a_body), sha(b_body)
+    manifest = Manifest.parse({
+        "contract_version": "player_manifest.v1",
+        "stand_id": 3,
+        "schedule_version": 9,
+        "server_time": NOW.isoformat(),
+        "window": {"from": NOW.isoformat(), "to": (NOW + timedelta(hours=1)).isoformat()},
+        "slots": [
+            {"slot_id": 1, "ad_id": 10,
+             "starts_at": (NOW - timedelta(minutes=1)).isoformat(),
+             "ends_at": (NOW + timedelta(minutes=5)).isoformat(),
+             "duration_seconds": 360, "priority": "manual",
+             "media": {"url": "https://x/1", "type": "image", "checksum_sha256": a}},
+            {"slot_id": 2, "ad_id": 20,
+             "starts_at": (NOW + timedelta(minutes=5)).isoformat(),
+             "ends_at": (NOW + timedelta(minutes=10)).isoformat(),
+             "duration_seconds": 300, "priority": "manual",
+             "media": {"url": "https://x/2", "type": "image", "checksum_sha256": b}},
+        ],
+    })
+    cache = MediaCache(tmp_path / "media")
+    cache.path_for(a).write_bytes(a_body)          # only slot 1 cached
+    app = build_app(cache, lambda: Schedule(manifest, cache), now=lambda: NOW)
+
+    state = TestClient(app).get("/state").json()
+
+    assert state["next_src"] is None               # nothing safe to preload
+
+
 def test_media_is_served_when_present(tmp_path):
     body = b"pixels"
     csum = sha(body)

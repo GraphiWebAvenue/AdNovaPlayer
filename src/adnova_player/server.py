@@ -85,6 +85,11 @@ def build_app(
 
         change_at = schedule.next_change_after(moment)
 
+        # What plays after this, when it is a cached scheduled slot, so the
+        # page can open it in a hidden layer before the switch and cut with no
+        # black flash. Null whenever there is nothing safe to preload.
+        nxt = schedule.upcoming(moment)
+
         return JSONResponse({
             "slot_id": item.slot_id,
             "ad_id": item.ad_id,
@@ -99,6 +104,8 @@ def build_app(
             "schedule_version": schedule.schedule_version,
             "server_time": moment.isoformat(),
             "next_change_at": change_at.isoformat() if change_at else None,
+            "next_src": nxt.local_src if nxt else None,
+            "next_kind": nxt.kind if nxt else None,
         })
 
     @app.get("/media/{checksum}")
@@ -205,6 +212,7 @@ _KIOSK_HTML = """<!doctype html>
   let front = 0;
   let currentKey = null;
   let pollTimer = null;
+  let warmed = null;          // the next_src we have already pulled into cache
 
   const keyOf = (s) => s ? (s.slot_id + ":" + s.src + ":" + s.schedule_version) : null;
 
@@ -224,7 +232,26 @@ _KIOSK_HTML = """<!doctype html>
       currentKey = key;
       show(state);
     }
+    warmNext(state);
     arm(nextPollMs(state));
+  }
+
+  // Pull the next scheduled item into the browser cache ahead of the switch,
+  // so when it becomes current the fetch is a local hit and the crossfade has
+  // a decoded frame to show — no black flash. The /media response is immutable
+  // and cached a year, so this warm fetch is spent, not repeated. Best-effort:
+  // a failed warm just means the switch pays the load, exactly as before.
+  function warmNext(state) {
+    const src = state.next_src;
+    if (!src || src === warmed) return;
+    warmed = src;
+    if (state.next_kind === "video") {
+      fetch(src, { cache: "force-cache" }).catch(() => {});
+    } else {
+      const img = new Image();
+      img.decoding = "async";
+      img.src = src;
+    }
   }
 
   function nextPollMs(state) {

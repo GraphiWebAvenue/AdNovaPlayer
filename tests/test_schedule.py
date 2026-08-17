@@ -147,6 +147,45 @@ def test_preload_checksums_lists_the_upcoming_media():
     assert schedule.preload_checksums(NOW) == {a, b}
 
 
+def test_upcoming_is_the_next_cached_slot():
+    a, b = "a" * 64, "b" * 64
+    m = manifest_with([
+        slot(1, NOW - timedelta(minutes=1), NOW + timedelta(minutes=5), a),
+        slot(2, NOW + timedelta(minutes=5), NOW + timedelta(minutes=10), b),
+    ])
+    nxt = Schedule(m, FakeCache({a, b})).upcoming(NOW)
+
+    assert nxt is not None
+    assert nxt.slot_id == 2
+    assert nxt.local_src == f"/media/{b}"
+
+
+def test_upcoming_is_none_when_the_next_slot_is_uncached():
+    # Only the current slot's media has landed — there is nothing safe to
+    # preload, so the page is told not to warm a miss.
+    a, b = "a" * 64, "b" * 64
+    m = manifest_with([
+        slot(1, NOW - timedelta(minutes=1), NOW + timedelta(minutes=5), a),
+        slot(2, NOW + timedelta(minutes=5), NOW + timedelta(minutes=10), b),
+    ])
+    assert Schedule(m, FakeCache({a})).upcoming(NOW) is None
+
+
+def test_upcoming_is_suppressed_by_an_active_override():
+    # A live test (or takeover/offline) means the next thing on screen is not
+    # the schedule's next slot, so nothing is advertised to preload.
+    from adnova_player.schedule import PlayItem
+
+    a, b = "a" * 64, "b" * 64
+    m = manifest_with([
+        slot(1, NOW - timedelta(minutes=1), NOW + timedelta(minutes=5), a),
+        slot(2, NOW + timedelta(minutes=5), NOW + timedelta(minutes=10), b),
+    ])
+    test = PlayItem(slot_id=-2, ad_id=None, kind="image", local_src="/media/x",
+                    muted=True, duration_seconds=0, priority="test", loop=True)
+    assert Schedule(m, FakeCache({a, b}), test=test).upcoming(NOW) is None
+
+
 def test_a_downloading_slot_holds_the_last_cached_ad_unbilled():
     # Slot 2 is due but its bytes are still on the wire; slot 1's ad is cached.
     # The screen holds slot 1's ad rather than cutting to the house loop —
