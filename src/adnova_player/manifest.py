@@ -118,6 +118,10 @@ class Manifest:
     window_to: datetime
     slots: list[Slot] = field(default_factory=list)
     preload_hours: int = 6
+    # Total on-disk media budget the device should respect (0/None = no
+    # explicit cap; the per-file MAX_MEDIA_BYTES still applies). Dashboard
+    # sets it via preload.max_cache_bytes.
+    max_cache_bytes: int | None = None
     manifest_poll_seconds: int = 600
     heartbeat_seconds: int = 60
     fetched_at: datetime | None = None
@@ -238,6 +242,11 @@ class Manifest:
             window_to=_dt(window.get("to") or raw["server_time"]),
             slots=sorted(slots, key=lambda s: s.starts_at),
             preload_hours=int(preload.get("hours_ahead", 6)),
+            max_cache_bytes=(
+                int(preload["max_cache_bytes"])
+                if preload.get("max_cache_bytes")
+                else None
+            ),
             manifest_poll_seconds=int(poll.get("manifest_seconds", 600)),
             heartbeat_seconds=int(poll.get("heartbeat_seconds", 60)),
             fetched_at=datetime.now(tz=UTC),

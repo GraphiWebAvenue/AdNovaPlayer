@@ -373,8 +373,29 @@ class Agent:
             self._safe(self._heartbeat_once, default=None)
             self._safe(self._upload_playback, default=None)
             self._safe(self._apply_screen_power, default=None)
+            # Free media that has already aired, every beat — so played
+            # files are gone within ~a heartbeat even while offline, and the
+            # card never fills with content that will not play again.
+            self._safe(self._evict_played, default=None)
             self._heartbeat_alive = _mono()
             self._stop.wait(max(15, self._config.heartbeat_seconds))
+
+    def _evict_played(self) -> None:
+        """
+        Drop media the current plan no longer references, and hold the cache
+        under the manifest's byte budget.
+
+        Skipped when there is no plan yet: the keep-set would be empty and
+        we would evict the very fallback the screen is holding.
+        """
+        schedule = self._schedule_ref()
+        manifest = schedule.manifest
+        if manifest is None:
+            return
+        keep = schedule.preload_checksums(self._now())
+        self._cache.evict_except(keep)
+        if manifest.max_cache_bytes:
+            self._cache.enforce_budget(manifest.max_cache_bytes, keep)
 
     def status(self) -> dict:
         """A snapshot for the on-site admin page. Read-only, cheap."""

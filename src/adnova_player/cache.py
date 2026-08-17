@@ -206,6 +206,56 @@ class MediaCache:
             log.info("Evicted %d media file(s) no longer in the plan.", removed)
         return removed
 
+    def enforce_budget(self, max_bytes: int, keep: set[str]) -> int:
+        """
+        Keep the cache under a total-byte budget by evicting the
+        least-recently-cached files the plan does NOT still need, oldest
+        first. Returns how many went.
+
+        Files in `keep` (the current plan's media + fallback + test) are
+        never evicted here — they are needed soon, and being over budget is
+        a smaller harm than a black frame. If dropping every evictable file
+        still leaves us over, we log and stop rather than delete content we
+        are about to play.
+        """
+        if max_bytes <= 0:
+            return 0
+        used = self.used_bytes()
+        if used <= max_bytes:
+            return 0
+
+        evictable = [
+            p for p in self._dir.iterdir()
+            if p.is_file() and p.name not in keep
+        ]
+        # Oldest first. mtime is set at download; readers don't touch it,
+        # so this is "least-recently-cached", a fine LRU proxy on a Pi
+        # (atime is usually disabled by noatime).
+        evictable.sort(key=lambda p: p.stat().st_mtime)
+
+        removed = 0
+        for p in evictable:
+            if used <= max_bytes:
+                break
+            try:
+                size = p.stat().st_size
+                p.unlink()
+                self._probed.discard(p.name)
+                self._undecodable.discard(p.name)
+                used -= size
+                removed += 1
+            except OSError as exc:
+                log.warning("Could not evict %s for budget: %s", p.name, exc)
+
+        if used > max_bytes:
+            log.warning(
+                "Cache is still %d bytes over budget after evicting every "
+                "file the plan no longer needs.", used - max_bytes,
+            )
+        if removed:
+            log.info("Budget eviction removed %d file(s).", removed)
+        return removed
+
     def used_bytes(self) -> int:
         return sum(p.stat().st_size for p in self._dir.iterdir() if p.is_file())
 
