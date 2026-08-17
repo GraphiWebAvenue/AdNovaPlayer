@@ -71,6 +71,23 @@ def test_a_401_returns_none():
     assert api_with(lambda req: httpx.Response(401)).fetch_manifest() is None
 
 
+def test_auth_failures_are_counted_and_cleared_on_success():
+    # A run of 401/403 is counted so the agent can tell a dead key from a
+    # blip; the first accepted response clears the streak.
+    codes = iter([401, 403, 401, 200])
+    doc = {"contract_version": "player_manifest.v1"}
+
+    def handler(req):
+        code = next(codes)
+        return httpx.Response(code, json=doc if code == 200 else None)
+
+    api = api_with(handler)
+    api.fetch_manifest(); assert api.auth_failures == 1
+    api.fetch_manifest(); assert api.auth_failures == 2
+    api.fetch_manifest(); assert api.auth_failures == 3
+    api.fetch_manifest(); assert api.auth_failures == 0   # accepted → reset
+
+
 def test_a_non_json_manifest_returns_none():
     api = api_with(lambda req: httpx.Response(200, content=b"<html>not json"))
     assert api.fetch_manifest() is None

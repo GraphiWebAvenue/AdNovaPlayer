@@ -27,6 +27,7 @@ class FakeApi:
         self.heartbeat_response = heartbeat
         self.sent_playback = []
         self.heartbeats = []
+        self.auth_failures = 0
 
     def fetch_manifest(self):
         return self.manifest
@@ -265,6 +266,29 @@ def test_uploaded_playback_is_acked(tmp_path):
 
     assert len(api.sent_playback) == 1
     assert playback.pending() == 0  # acked and dropped
+
+
+def test_a_sustained_auth_rejection_triggers_reenroll_once(tmp_path):
+    api = FakeApi(heartbeat=None)          # 401s make send_heartbeat return None
+    agent, _ = make_agent(tmp_path, api)
+    fired = []
+    agent._on_auth_lost = lambda: fired.append(True)
+    agent._auth_failure_limit = 3
+
+    # Below the limit: a transient blip is tolerated, nothing fires.
+    api.auth_failures = 2
+    agent._heartbeat_once()
+    assert fired == []
+
+    # At the limit: the key is judged gone and re-enrollment is requested once.
+    api.auth_failures = 3
+    agent._heartbeat_once()
+    assert fired == [True]
+
+    # Still failing on the next beat, but the request is not re-fired.
+    api.auth_failures = 9
+    agent._heartbeat_once()
+    assert fired == [True]
 
 
 def test_a_failing_cycle_does_not_propagate(tmp_path):

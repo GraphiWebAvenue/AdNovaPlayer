@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -59,12 +60,24 @@ class Agent:
         cache: MediaCache,
         playback: PlaybackLog,
         screen: Screen | None = None,
+        on_auth_lost: Callable[[], None] | None = None,
     ) -> None:
         self._config = config
         self._api = api
         self._cache = cache
         self._playback = playback
         self._screen = screen or Screen()
+        # Called once when the stand key has been rejected long enough to be
+        # considered gone, so the process can drop back into enrollment for a
+        # fresh key. Injected by main.py; absent in tests, where the decision
+        # itself is what is checked.
+        self._on_auth_lost = on_auth_lost
+        # How many rejections in a row before we conclude the key is dead. At
+        # one heartbeat a minute this is ~10 minutes of solid 401s — well past
+        # any transient signing-window blip, which the clock correction already
+        # removes anyway.
+        self._auth_failure_limit = 10
+        self._auth_lost_fired = False
 
         self._lock = threading.Lock()
         self._schedule = Schedule(None, cache)
@@ -540,6 +553,14 @@ class Agent:
         body = self._heartbeat_body()
         response = self._api.send_heartbeat(body)
         self._last_contact_ok = response is not None
+
+        # A key rejected for too long is a key that is gone — the stand was
+        # reassigned or deleted, or the key rotated. Drop back into enrollment
+        # for a fresh one rather than showing the fallback loop forever. Checked
+        # even on a None response, since a 401 is exactly what returns None.
+        if self._api.auth_failures >= self._auth_failure_limit:
+            self._handle_auth_lost()
+
         if response is None:
             return
         # A reached heartbeat is proof the network is up; reset the offline
@@ -733,6 +754,24 @@ class Agent:
         except OSError as exc:
             return False, f"could not request a display restart: {exc}"
         return True, "display restart requested"
+
+    def _handle_auth_lost(self) -> None:
+        """
+        Act, once, on a stand key that has been rejected past the limit.
+
+        Fires the injected callback a single time (main.py clears the dead key
+        and restarts into enrollment); further heartbeats do not re-fire it,
+        so the restart is requested once, not on every beat until it happens.
+        """
+        if self._auth_lost_fired:
+            return
+        self._auth_lost_fired = True
+        log.error(
+            "Stand key rejected %d times in a row; re-enrolling for a fresh key.",
+            self._api.auth_failures,
+        )
+        if self._on_auth_lost is not None:
+            self._safe(self._on_auth_lost, default=None)
 
     def _apply_emergency(self, emergency: dict | None) -> None:
         """

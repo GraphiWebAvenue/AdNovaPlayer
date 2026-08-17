@@ -68,6 +68,7 @@ class TakeoverApi:
     def __init__(self, body: bytes, emergency: dict | None):
         self.body = body
         self.emergency = emergency
+        self.auth_failures = 0
 
     def fetch_manifest(self):
         return None

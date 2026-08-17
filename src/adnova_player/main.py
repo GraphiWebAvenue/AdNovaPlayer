@@ -51,7 +51,7 @@ def build(config: Config) -> tuple[Agent, object]:
     cache = MediaCache(config.media_dir)
     playback = PlaybackLog(config.log_dir / "playback.json")
 
-    agent = Agent(config, api, cache, playback)
+    agent = Agent(config, api, cache, playback, on_auth_lost=_reenroll)
     app = build_app(
         cache,
         current_schedule=agent.schedule,
@@ -192,6 +192,33 @@ def _splash_server(cache: MediaCache, enroll):
                     log_level="warning", access_log=False, server_header=False)
 
     return run
+
+
+def _reenroll() -> None:
+    """
+    Drop a rejected stand key and restart into enrollment for a fresh one.
+
+    Called when Dashboard has refused the key for long enough that it is
+    plainly gone (stand reassigned or deleted, key rotated). The device's own
+    identity — its device_id and secret — is left untouched, so Dashboard can
+    re-adopt the very same device; only the dead stand key is cleared, and the
+    restart lands in the enrollment flow because a keyless config cannot load.
+    """
+    _clear_stand_key(ENV_FILE)
+    _restart_service()
+
+
+def _clear_stand_key(env_path: Path) -> None:
+    """Remove the ADNOVA_STAND_KEY line, leaving every other setting intact."""
+    if not env_path.exists():
+        return
+    kept = [
+        line for line in env_path.read_text(encoding="utf-8").splitlines()
+        if not line.strip().startswith("ADNOVA_STAND_KEY=")
+    ]
+    tmp = env_path.with_suffix(".tmp")
+    tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    tmp.replace(env_path)
 
 
 def _restart_service() -> None:

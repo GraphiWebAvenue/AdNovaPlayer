@@ -50,6 +50,17 @@ class DashboardApi:
             follow_redirects=False,  # a redirect to elsewhere is not our server
             headers={"User-Agent": f"adnova-player/{_version()}"},
         )
+        # Consecutive authentication rejections (401/403). A single one is
+        # usually transient — a clock blip, a signing-window edge — but a run
+        # of them means the stand key itself is no longer accepted, and the
+        # agent watches this to decide it is time to re-enroll. Any accepted
+        # response resets it to zero.
+        self._auth_failures = 0
+
+    @property
+    def auth_failures(self) -> int:
+        """How many authentication rejections in a row (0 once one succeeds)."""
+        return self._auth_failures
 
     # ── Manifest ─────────────────────────────────────────────────────────
 
@@ -170,16 +181,23 @@ class DashboardApi:
         if response.status_code >= 500:
             log.warning("%s %s → HTTP %s (server side)", method, path, response.status_code)
             return None
-        if response.status_code == 401:
+        if response.status_code in (401, 403):
             # Either the clock has drifted past the signing window or the
             # key is wrong. Both are worth shouting about — a whole fleet
-            # can fall off after a bad NTP day.
-            log.error("%s %s → 401: request was rejected as unauthenticated.", method, path)
+            # can fall off after a bad NTP day. A sustained run of these is
+            # what tells the agent the key is truly gone and to re-enroll.
+            self._auth_failures += 1
+            log.error(
+                "%s %s → %s: request rejected as unauthenticated (%d in a row).",
+                method, path, response.status_code, self._auth_failures,
+            )
             return None
         if response.status_code >= 400:
             log.warning("%s %s → HTTP %s", method, path, response.status_code)
             return None
 
+        # An accepted response proves the key still works: clear the streak.
+        self._auth_failures = 0
         return response
 
 
