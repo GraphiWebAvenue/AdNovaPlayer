@@ -514,6 +514,16 @@ class Agent:
         # media rather than a URL the device fetches on trust.
         self._apply_emergency(response.get("emergency"))
 
+        # A live test broadcast, started or ended through the control channel
+        # rather than the manifest. The point is immediacy: the instant an
+        # operator stops the test, Dashboard sends `test: null` here and the
+        # override clears on this heartbeat — the screen resumes the slot the
+        # schedule says belongs on NOW, not the ad that was up before the test.
+        # The key is honoured only when present; its absence means "no change",
+        # so a manifest-driven test is not wiped by every ordinary heartbeat.
+        if "test" in response:
+            self._apply_test(response.get("test"))
+
         # Named operations queued by an operator. Only the fixed set below
         # is ever run — the response never carries a shell string, and this
         # would ignore one if it did.
@@ -703,6 +713,71 @@ class Agent:
         with self._lock:
             self._emergency = item
         log.info("Takeover active.")
+
+    def _apply_test(self, test: dict | None) -> None:
+        """
+        Start or end a live test broadcast from the control channel.
+
+        A test plays one ad on repeat over the schedule while an operator
+        watches it. Ending it must be instant: the moment Dashboard stops the
+        test it sends `test: null` here, the override clears, and now_playing
+        resolves to whatever slot the plan says belongs on screen at the
+        current moment — never the ad that was up before the test, because the
+        plan is evaluated against now, not resumed from a saved position (R15).
+        Starting a test live is the same in reverse. A null (or non-dict)
+        clears; a dict names its media by checksum and takes effect only once
+        those bytes are cached and valid, exactly like a scheduled slot.
+        """
+        if not isinstance(test, dict):
+            if self._test is not None:
+                log.info("Test broadcast ended; resuming the scheduled slot.")
+            self._install_test(None)
+            return
+
+        checksum = str(test.get("checksum_sha256") or "")
+        url = str(test.get("url") or "")
+        if not checksum or not url:
+            return
+
+        if not self._cache.has(checksum):
+            self._cache.ensure(MediaNeed(url=url, checksum_sha256=checksum))
+        if not self._cache.is_playable(checksum):
+            log.warning("Test media could not be cached; not shown.")
+            return
+
+        is_video = test.get("type") == "video"
+        item = PlayItem(
+            slot_id=-2,
+            ad_id=None,  # a test never bills; ad_id stays out of the play log
+            kind="video" if is_video else "image",
+            local_src=self._cache.local_url_path(checksum),
+            muted=not is_video or bool(test.get("muted", True)),
+            duration_seconds=0,  # loops, so duration is irrelevant
+            priority="test",
+            label="TEST",
+            loop=True,
+        )
+        self._install_test(item)
+        log.info("Test broadcast active (live).")
+
+    def _install_test(self, item: PlayItem | None) -> None:
+        """
+        Swap the live test override in, and rebuild the stored plan around it.
+
+        The test is baked into `self._schedule` (that is what the local server
+        reads on the fast path), so changing `self._test` alone would leave a
+        stale test on screen until the next fetch. Rebuilding here keeps the
+        stored plan the single source of truth for what plays, so the change
+        is visible on the very next /state poll.
+        """
+        with self._lock:
+            self._test = item
+            self._schedule = Schedule(
+                self._schedule.manifest,
+                self._cache,
+                fallback=self._fallback,
+                test=item,
+            )
 
     def _heartbeat_body(self) -> dict:
         health = read_health(self._config.cache_dir, self._cache.used_bytes())

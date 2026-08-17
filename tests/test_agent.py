@@ -256,6 +256,73 @@ def test_a_verified_manifest_installs_and_downloads(tmp_path):
     assert cache.has(checksum)  # the media was downloaded and verified
 
 
+def _test_play_item():
+    from adnova_player.schedule import PlayItem
+
+    return PlayItem(
+        slot_id=-2, ad_id=None, kind="image", local_src="/media/test",
+        muted=True, duration_seconds=0, priority="test", label="TEST", loop=True,
+    )
+
+
+def test_a_live_test_broadcast_from_the_heartbeat_shows_at_once(tmp_path):
+    # The operator hits "play now"; Dashboard pushes it on the heartbeat,
+    # not the slower manifest poll — so it is on screen within one heartbeat.
+    csum = "c" * 64
+    api = FakeApi(heartbeat={"test": {
+        "url": "https://x/t", "checksum_sha256": csum, "type": "image",
+    }})
+    agent, _ = make_agent(tmp_path, api)
+    agent._cache.has = lambda c: c == csum          # already cached
+    agent._cache.is_playable = lambda c: c == csum
+
+    agent._heartbeat_once()
+
+    item = agent.schedule().now_playing(NOW)
+    assert item.is_test
+    assert item.local_src == f"/media/{csum}"
+
+
+def test_ending_a_test_via_the_heartbeat_resumes_the_current_slot(tmp_path):
+    # R15: ending the test resumes the slot that belongs on screen NOW, not
+    # the ad that was up before the test — the plan is read against `now`.
+    from datetime import timedelta
+
+    from adnova_player.schedule import Schedule
+    from tests.test_schedule import NOW as SNOW
+    from tests.test_schedule import manifest_with, slot
+
+    csum = "d" * 64
+    m = manifest_with([slot(1, SNOW - timedelta(minutes=1), SNOW + timedelta(hours=1), csum)])
+    api = FakeApi(heartbeat={"test": None})         # Dashboard ends the test
+    agent, _ = make_agent(tmp_path, api)
+    agent._cache.is_playable = lambda c: c == csum
+    agent._schedule = Schedule(m, agent._cache)
+
+    # A test is running, covering the scheduled slot.
+    agent._install_test(_test_play_item())
+    assert agent.schedule().now_playing(SNOW).is_test
+
+    agent._heartbeat_once()                         # the test ends here
+
+    resumed = agent.schedule().now_playing(SNOW)
+    assert not resumed.is_test
+    assert resumed.slot_id == 1                     # the slot due right now
+
+
+def test_an_absent_test_key_leaves_a_running_test_untouched(tmp_path):
+    # A manifest-driven test must survive ordinary heartbeats that carry no
+    # `test` key at all — absence means "no change", not "clear".
+    api = FakeApi(heartbeat={"ok": True})
+    agent, _ = make_agent(tmp_path, api)
+    running = _test_play_item()
+    agent._install_test(running)
+
+    agent._heartbeat_once()
+
+    assert agent._test is running
+
+
 def test_the_agent_falls_to_default_after_being_offline_past_the_window(tmp_path):
     from datetime import UTC, datetime, timedelta
 
