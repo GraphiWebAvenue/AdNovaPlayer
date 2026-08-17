@@ -154,10 +154,25 @@ class PlaybackLog:
             return
         try:
             rows = json.loads(self._path.read_text(encoding="utf-8"))
-            for row in rows:
-                self._entries.append(Entry(**row))
-        except (OSError, ValueError, TypeError) as exc:
+        except (OSError, ValueError) as exc:
             log.warning("Ignoring an unreadable playback log (%s).", exc)
+            return
+        if not isinstance(rows, list):
+            log.warning("Playback log was not a list; ignoring it.")
+            return
+
+        # Skip individual corrupt rows rather than dropping the whole file —
+        # SD flips a byte here and there, and one bad record must not lose
+        # every billable impression around it.
+        kept, dropped = 0, 0
+        for row in rows:
+            try:
+                self._entries.append(Entry(**row))
+                kept += 1
+            except (TypeError, ValueError):
+                dropped += 1
+        if dropped:
+            log.warning("Dropped %d corrupt playback row(s); kept %d.", dropped, kept)
 
 
 def now_iso() -> str:

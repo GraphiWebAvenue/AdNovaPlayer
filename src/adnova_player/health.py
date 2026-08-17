@@ -45,6 +45,11 @@ class Health:
     uptime_seconds: int | None = None
     undervoltage: bool | None = None
     throttled: bool | None = None
+    # False once the card can no longer be written — the tell-tale of a dying
+    # SD, which the kernel remounts read-only. The device keeps playing from
+    # cache, but an operator needs to know to swap the card before it fails
+    # outright. None means the check could not run.
+    storage_writable: bool | None = None
     warnings: list[str] = field(default_factory=list)
 
 
@@ -63,6 +68,7 @@ def read(cache_dir: Path, cache_used_bytes: int | None = None) -> Health:
     disk_free = _disk_free(cache_dir)
     uptime = _uptime()
     under, throttled = _throttle_state()
+    writable = _storage_writable(cache_dir)
 
     # Turn the raw readings into the plain-language flags an operator scans.
     if under:
@@ -73,6 +79,8 @@ def read(cache_dir: Path, cache_used_bytes: int | None = None) -> Health:
         warnings.append(f"high temperature: {temp:.0f}°C")
     if disk_free is not None and disk_free < 200 * 1024 * 1024:
         warnings.append("low disk space")
+    if writable is False:
+        warnings.append("storage is read-only — the SD card is failing, replace it")
 
     return Health(
         temp_c=temp,
@@ -83,6 +91,7 @@ def read(cache_dir: Path, cache_used_bytes: int | None = None) -> Health:
         uptime_seconds=uptime,
         undervoltage=under,
         throttled=throttled,
+        storage_writable=writable,
         warnings=warnings,
     )
 
@@ -130,6 +139,27 @@ def _disk_free(path: Path) -> int | None:
         return shutil.disk_usage(path).free
     except OSError:
         return None
+
+
+def _storage_writable(path: Path) -> bool | None:
+    """
+    Whether the state directory still accepts writes.
+
+    Actually writes and deletes a tiny probe file, because a failing SD is
+    most often remounted read-only by the kernel while `disk_usage` still
+    reports free space — so only a real write catches it. True on success,
+    False when the write is refused (read-only or full), None if the path is
+    not there to probe.
+    """
+    if not path.exists():
+        return None
+    probe = path / ".adnova-write-test"
+    try:
+        probe.write_bytes(b"ok")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
 
 
 def _uptime() -> int | None:

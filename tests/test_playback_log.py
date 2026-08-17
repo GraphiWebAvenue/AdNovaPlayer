@@ -32,6 +32,33 @@ def test_a_recorded_play_survives_a_reboot(tmp_path):
     assert reborn.take_batch()[0].slot_id == 1
 
 
+def test_a_single_corrupt_row_does_not_lose_the_others(tmp_path):
+    # SD armor: a byte flipped in one record must not throw away every
+    # billable impression around it.
+    import json
+
+    path = tmp_path / "playback.json"
+    good = {
+        "slot_id": 1, "ad_id": 10, "started_at": "2026-08-15T12:00:00+00:00",
+        "ended_at": None, "outcome": "played",
+    }
+    corrupt = {"unexpected": "shape"}
+    path.write_text(json.dumps([good, corrupt, good]), encoding="utf-8")
+
+    log = PlaybackLog(path)
+
+    assert log.pending() == 2          # both good rows kept, the bad one skipped
+
+
+def test_a_wholly_unreadable_log_is_ignored_not_fatal(tmp_path):
+    path = tmp_path / "playback.json"
+    path.write_text("{ this is not json", encoding="utf-8")
+
+    log = PlaybackLog(path)           # must not raise
+
+    assert log.pending() == 0
+
+
 def test_take_does_not_remove_so_a_failed_upload_is_safe(tmp_path):
     log = PlaybackLog(tmp_path / "p.json")
     log.record(entry(1))

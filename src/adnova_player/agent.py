@@ -910,6 +910,9 @@ class Agent:
             "temp_c": health.temp_c,
             "cpu_percent": health.cpu_percent,
             "mem_percent": health.mem_percent,
+            # False when the SD has gone read-only — a dying card, flagged so
+            # ops can swap it before it fails outright (Feature: SD armor).
+            "storage_writable": health.storage_writable,
             "network_ok": True,  # we only get here having reached Dashboard
             # How far the device's own clock is from Dashboard's (device minus
             # server, seconds). We correct for it internally; this is reported
