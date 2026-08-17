@@ -183,6 +183,33 @@ def test_the_control_channel_triggers_a_refetch(tmp_path):
     agent._heartbeat_once()  # must not raise
 
 
+def test_the_heartbeat_reports_verified_display_health(tmp_path):
+    import json
+
+    agent, _ = make_agent(tmp_path)
+    dpath = tmp_path / "display.json"
+    dpath.write_text(json.dumps({
+        "src": "/media/x", "playing": True, "freeze_recoveries": 1, "at": 123.0,
+    }), encoding="utf-8")
+    agent._display_state_path = str(dpath)
+
+    body = agent._heartbeat_body()
+
+    assert body["display"]["src"] == "/media/x"
+    assert body["display"]["playing"] is True
+    assert body["display"]["freeze_recoveries"] == 1
+    assert "undecodable_count" in body
+
+
+def test_the_heartbeat_display_is_null_without_a_driver_report(tmp_path):
+    agent, _ = make_agent(tmp_path)
+    agent._display_state_path = str(tmp_path / "missing.json")
+
+    body = agent._heartbeat_body()
+
+    assert body["display"] is None
+
+
 def test_uploaded_playback_is_acked(tmp_path):
     api = FakeApi()
     agent, playback = make_agent(tmp_path, api)

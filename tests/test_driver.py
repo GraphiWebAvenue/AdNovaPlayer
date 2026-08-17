@@ -27,6 +27,28 @@ driver = _load_driver()
 FreezeDetector = driver.FreezeDetector
 
 
+def test_display_record_shapes_the_snapshot():
+    rec = driver.display_record(
+        {"src": "/media/abc", "slot_id": 7, "kind": "video"},
+        time_pos=12.3456, playing=True, freezes=2,
+    )
+    assert rec["src"] == "/media/abc"
+    assert rec["slot_id"] == 7
+    assert rec["kind"] == "video"
+    assert rec["time_pos"] == 12.346          # rounded, not the raw float
+    assert rec["playing"] is True
+    assert rec["freeze_recoveries"] == 2
+
+
+def test_display_record_tolerates_no_state_and_no_clock():
+    rec = driver.display_record(None, time_pos=None, playing=False, freezes=0)
+    assert rec["src"] is None
+    assert rec["slot_id"] is None
+    assert rec["time_pos"] is None
+    assert rec["playing"] is False
+    assert rec["freeze_recoveries"] == 0
+
+
 def test_an_advancing_video_never_trips():
     d = FreezeDetector(freeze_seconds=10)
     # The clock moves a second per reading; nothing is ever flagged.

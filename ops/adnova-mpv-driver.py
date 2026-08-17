@@ -31,6 +31,10 @@ import urllib.request
 PLAYER = os.environ.get("ADNOVA_KIOSK_URL", "http://127.0.0.1:8080").rstrip("/")
 STATE_URL = f"{PLAYER}/state"
 IPC_SOCK = "/tmp/adnova-mpv.sock"
+# Where the driver leaves a snapshot of what is REALLY on the panel — the file
+# the player folds into its heartbeat so Dashboard reports verified playback
+# (the clock is advancing, this src is up) rather than only what was intended.
+DISPLAY_STATE = os.environ.get("ADNOVA_DISPLAY_STATE", "/var/lib/adnova-player/display.json")
 
 # mpv, told to be a silent, controllable, full-screen surface and nothing
 # else. --hwdec=auto is the whole point: it offloads decode to the board.
@@ -148,6 +152,41 @@ class FreezeDetector:
         return False
 
 
+def display_record(
+    state: dict | None, time_pos: float | None, playing: bool, freezes: int
+) -> dict:
+    """
+    The health snapshot the player folds into its heartbeat.
+
+    A pure shaping of what the driver knows about the panel right now: the src
+    it last applied, whether mpv's clock is advancing, and how many freezes it
+    has had to recover from. Dashboard reads this to show *verified* playback —
+    proof the pixels are moving — instead of trusting that what was scheduled
+    is what a distant screen is actually doing.
+    """
+    st = state or {}
+    return {
+        "src": st.get("src"),
+        "slot_id": st.get("slot_id"),
+        "kind": st.get("kind"),
+        "time_pos": round(time_pos, 3) if isinstance(time_pos, (int, float)) else None,
+        "playing": bool(playing),
+        "freeze_recoveries": int(freezes),
+    }
+
+
+def write_display_state(record: dict) -> None:
+    """Atomically drop the snapshot where the player will read it. Best-effort."""
+    record = {**record, "at": time.time()}
+    tmp = DISPLAY_STATE + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+        os.replace(tmp, DISPLAY_STATE)
+    except OSError:
+        pass
+
+
 def launch_mpv() -> subprocess.Popen:
     # A throwaway socket from a previous run would make mpv refuse to bind.
     try:
@@ -251,6 +290,7 @@ def main() -> None:
     last_state: dict | None = None
     detector = FreezeDetector()
     consecutive = 0
+    total_freezes = 0
 
     while True:
         # mpv is the one thing that must never stay dead: relaunch it and
@@ -267,6 +307,10 @@ def main() -> None:
             time.sleep(2)
             continue
 
+        is_video = bool(state.get("kind") == "video")
+        playing = is_video and state.get("src") not in (None, "/fallback")
+        pos = mpv_get("time-pos") if is_video else None
+
         key = key_of(state)
         if key != current:
             current = key
@@ -277,10 +321,8 @@ def main() -> None:
         else:
             # Same item still up: make sure it is actually playing, not frozen
             # on a decoded frame while the clock is dead.
-            is_video = bool(last_state and last_state.get("kind") == "video")
-            playing = is_video and last_state.get("src") not in (None, "/fallback")
-            pos = mpv_get("time-pos") if is_video else None
             if detector.observe(time.monotonic(), is_video, playing, pos):
+                total_freezes += 1
                 consecutive += 1
                 if consecutive >= 2:
                     # A reload did not thaw it: the decoder or the surface is
@@ -297,6 +339,10 @@ def main() -> None:
                     # First strike: reload the same file in place, which
                     # reopens the demuxer and decoder without a full restart.
                     show(last_state)
+
+        # Leave a fresh snapshot of what the panel is really doing, for the
+        # player to report. Best-effort: a write failure never stops playback.
+        write_display_state(display_record(state, pos, playing, total_freezes))
 
         time.sleep(1)
 

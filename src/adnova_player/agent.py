@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -101,6 +102,12 @@ class Agent:
         # never gets online counts its offline window from power-on; used to
         # fall to the default loop once the cached plan has gone stale.
         self._last_contact_at = datetime.now(tz=UTC)
+        # Where the display driver leaves its snapshot of what the panel is
+        # really doing. Read on each heartbeat so Dashboard reports verified
+        # playback, not just intent. Env-overridable to match the driver.
+        self._display_state_path = os.environ.get(
+            "ADNOVA_DISPLAY_STATE", "/var/lib/adnova-player/display.json"
+        )
 
         # Command outcomes the device has to report on the next heartbeat —
         # {id, status, detail} — so Dashboard shows each one done or failed
@@ -632,6 +639,22 @@ class Agent:
             return False, detail or f"exited {result.returncode}"
         return True, ""
 
+    def _read_display_health(self) -> dict:
+        """
+        The display driver's latest snapshot, or {} if none.
+
+        Mirrors _read_os_update: another process (the mpv driver, in the
+        desktop session) writes it, we only read. Absent or unreadable simply
+        means no driver has reported — the heartbeat then carries a null
+        display block rather than failing.
+        """
+        try:
+            with open(self._display_state_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
     def _read_os_update(self) -> dict:
         """
         The last OS-update outcome, written by adnova-os-update.sh.
@@ -790,6 +813,7 @@ class Agent:
         # set on the next beat.
         acks = self._take_acks()
         os_update = self._read_os_update()
+        display = self._read_display_health()
 
         return {
             "contract_version": "player_heartbeat.v1",
@@ -823,6 +847,21 @@ class Agent:
             "os_update_status": os_update.get("status"),
             "os_update_detail": os_update.get("detail"),
             "os_update_at": os_update.get("at"),
+            # Verified playback, from the display driver: what src is truly on
+            # the panel, whether mpv's clock is advancing, and how many freezes
+            # it has recovered from — so a distant screen's real state is
+            # visible, not merely what was scheduled. Null when no driver has
+            # reported yet (e.g. the browser path). See _read_display_health.
+            "display": {
+                "src": display.get("src"),
+                "playing": display.get("playing"),
+                "freeze_recoveries": display.get("freeze_recoveries"),
+                "at": display.get("at"),
+            } if display else None,
+            # How many cached files failed the decode probe and are quarantined
+            # (Feature: media pre-validation), so Dashboard can flag a stand
+            # holding media it cannot actually play.
+            "undecodable_count": self._cache.undecodable_count(),
         }
 
     def _take_acks(self) -> list[dict]:
