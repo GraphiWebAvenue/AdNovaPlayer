@@ -97,6 +97,10 @@ class Agent:
 
         # Whether the last heartbeat reached Dashboard, for the admin page.
         self._last_contact_ok = False
+        # When Dashboard was last reached. Starts at boot so a device that
+        # never gets online counts its offline window from power-on; used to
+        # fall to the default loop once the cached plan has gone stale.
+        self._last_contact_at = datetime.now(tz=UTC)
 
         # Command outcomes the device has to report on the next heartbeat —
         # {id, status, detail} — so Dashboard shows each one done or failed
@@ -119,19 +123,32 @@ class Agent:
         screen by the next poll.
         """
         with self._lock:
-            if self._emergency is None:
+            offline = self._offline_expired(self._schedule.manifest)
+            if self._emergency is None and not offline:
                 return self._schedule
-            # Rebuild a view with the takeover layered on, without mutating
-            # the stored plan — the takeover is transient. The test override
-            # is already baked into the stored plan, but carry it here too so
-            # it survives while an emergency view is being composed.
+            # Rebuild a view with the takeover and/or the offline-expiry flag
+            # layered on, without mutating the stored plan — both are
+            # transient. The test override is already baked into the stored
+            # plan, but carry it here too so it survives the rebuild.
             return Schedule(
                 self._schedule.manifest,
                 self._cache,
                 emergency=self._emergency,
                 fallback=self._fallback,
                 test=self._test,
+                offline_expired=offline,
             )
+
+    def _offline_expired(self, manifest: Manifest | None) -> bool:
+        """
+        True once we've been out of contact longer than the plan is meant to
+        cover (its preload window, default 6h). Past that, the cached slots
+        are stale and the screen falls to the operator's default loop.
+        """
+        if manifest is None:
+            return False
+        hours = manifest.preload_hours or 6
+        return (self._now() - self._last_contact_at).total_seconds() > hours * 3600
 
     def on_playing(self, item: PlayItem) -> None:
         """
@@ -480,6 +497,9 @@ class Agent:
         self._last_contact_ok = response is not None
         if response is None:
             return
+        # A reached heartbeat is proof the network is up; reset the offline
+        # clock that would otherwise fall the screen to the default loop.
+        self._last_contact_at = self._now()
 
         # The control channel. Dashboard tells us to refetch after a
         # schedule change, and this is where the pull-based "ping" lands:

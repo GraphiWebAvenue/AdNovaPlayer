@@ -254,3 +254,26 @@ def test_a_verified_manifest_installs_and_downloads(tmp_path):
 
     assert agent.schedule().schedule_version == 5
     assert cache.has(checksum)  # the media was downloaded and verified
+
+
+def test_the_agent_falls_to_default_after_being_offline_past_the_window(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from adnova_player.schedule import Schedule
+    from tests.test_schedule import NOW, manifest_with, slot
+
+    agent, _ = make_agent(tmp_path)
+    csum = "e" * 64
+    # A slot covering a wide window, with its media reported playable.
+    m = manifest_with([slot(1, NOW, NOW + timedelta(hours=12), csum)])
+    agent._cache.is_playable = lambda c: c == csum
+    agent._schedule = Schedule(m, agent._cache)
+    agent._last_contact_at = NOW
+
+    # Fresh contact (5 min ago) → the covered slot plays.
+    agent._now = lambda: NOW + timedelta(minutes=5)
+    assert agent.schedule().now_playing(NOW + timedelta(minutes=5)).slot_id == 1
+
+    # 7h since contact, past the 6h preload window → the default loop.
+    agent._now = lambda: NOW + timedelta(hours=7)
+    assert agent.schedule().now_playing(NOW + timedelta(hours=7)).is_fallback

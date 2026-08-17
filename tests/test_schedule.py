@@ -145,3 +145,18 @@ def test_preload_checksums_lists_the_upcoming_media():
     schedule = Schedule(m, FakeCache({a, b}))
 
     assert schedule.preload_checksums(NOW) == {a, b}
+
+
+def test_offline_expired_forces_the_default_over_a_covered_slot():
+    # A slot that still covers the moment would normally play...
+    csum = "d" * 64
+    m = manifest_with([slot(1, NOW, NOW + timedelta(hours=12), csum)])
+    cache = FakeCache({csum})
+    moment = NOW + timedelta(minutes=1)
+
+    assert Schedule(m, cache).now_playing(moment).slot_id == 1
+
+    # ...but once contact has been lost past the plan's window, the cached
+    # slots are stale, so the operator's default loop shows instead.
+    stale = Schedule(m, cache, offline_expired=True)
+    assert stale.now_playing(moment).is_fallback

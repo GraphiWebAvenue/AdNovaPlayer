@@ -131,9 +131,16 @@ class Schedule:
         emergency: PlayItem | None = None,
         fallback: PlayItem | None = None,
         test: PlayItem | None = None,
+        offline_expired: bool = False,
     ) -> None:
         self._manifest = manifest
         self._cache = cache
+        # True once the device has been out of contact with Dashboard longer
+        # than the plan it holds is meant to cover (preload_hours). Past that
+        # the cached slots are stale, so we stop honouring them and show the
+        # operator's default loop until the network — and a fresh plan —
+        # return.
+        self._offline_expired = offline_expired
         # A takeover pushed from Dashboard through the heartbeat control
         # channel — a closure notice, a safety message — that preempts the
         # scheduled plan entirely while it is active.
@@ -167,6 +174,13 @@ class Schedule:
         # screen must say something *now*.
         if self._emergency is not None:
             return self._emergency
+
+        # Out of contact too long: the cached plan has outlived the window it
+        # was meant to cover, so its slots are no longer trustworthy. Show
+        # the operator's default loop instead of stale ads until a fresh
+        # plan arrives.
+        if self._offline_expired:
+            return self._fallback
 
         # A live test broadcast wins over the schedule (but not a safety
         # takeover). Dashboard only sends one while the operator's test is
