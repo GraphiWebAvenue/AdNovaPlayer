@@ -141,8 +141,9 @@ def test_refetch_command_triggers_a_fetch_and_acks(tmp_path):
 
     agent._run_commands([{"id": 5, "command": "refetch"}])
 
-    # Acked, ready to report on the next heartbeat.
-    assert 5 in agent._take_acks()
+    # Acked, ready to report on the next heartbeat. Acks are now rich
+    # {id, status, detail} records, not bare ids.
+    assert any(a["id"] == 5 and a["status"] == "done" for a in agent._take_acks())
 
 
 def test_an_arbitrary_command_is_ignored(tmp_path):
@@ -175,9 +176,15 @@ def test_a_whitelisted_command_runs_a_fixed_argv(tmp_path):
 def test_completed_commands_ride_the_heartbeat(tmp_path):
     api = TakeoverApi(b"", None)
     agent, _ = _agent(tmp_path, api)
-    agent._pending_acks = [3, 4]
+    agent._pending_acks = [
+        {"id": 3, "status": "done", "detail": ""},
+        {"id": 4, "status": "done", "detail": ""},
+    ]
 
     body = agent._heartbeat_body()
 
+    # completed_commands stays a bare-id list (older-Dashboard-compatible);
+    # the rich records ride command_results.
     assert body["completed_commands"] == [3, 4]
+    assert [r["id"] for r in body["command_results"]] == [3, 4]
     assert agent._take_acks() == []  # cleared after being sent
