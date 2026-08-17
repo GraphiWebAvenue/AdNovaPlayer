@@ -27,6 +27,18 @@ def cache_with(tmp_path, handler) -> MediaCache:
     return MediaCache(tmp_path / "media", client=client)
 
 
+def test_a_plaintext_media_url_is_refused(tmp_path):
+    # Defence in depth: even from a signed manifest, media is TLS or nothing.
+    # The refusal happens before any request, so no network is touched.
+    def explode(req):
+        raise AssertionError("should never fetch a plaintext URL")
+
+    cache = cache_with(tmp_path, explode)
+    checksum = sha(b"whatever")
+    assert cache.ensure(MediaNeed(url="http://x/media/1", checksum_sha256=checksum)) is False
+    assert not cache.path_for(checksum).exists()
+
+
 def test_a_valid_file_downloads_and_verifies(tmp_path):
     body = b"pretend this is an mp4"
     checksum = sha(body)

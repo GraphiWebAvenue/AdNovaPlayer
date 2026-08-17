@@ -19,6 +19,19 @@ VALID = {
 }
 
 
+def test_a_plaintext_base_url_is_rejected():
+    # http to a real host would let a network attacker read the stand key's
+    # use and feed a forged schedule — refuse to start rather than run insecure.
+    with pytest.raises(ConfigError):
+        load({**VALID, "ADNOVA_BASE_URL": "http://dashboard.adnovatech.online"})
+
+
+def test_a_loopback_http_base_url_is_allowed():
+    # No network to attack on the loopback — handy for local dev and tests.
+    config = load({**VALID, "ADNOVA_BASE_URL": "http://127.0.0.1:8000"})
+    assert config.base_url == "http://127.0.0.1:8000"
+
+
 def test_a_minimal_env_yields_a_working_config():
     config = load(VALID)
 

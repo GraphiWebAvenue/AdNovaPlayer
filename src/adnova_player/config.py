@@ -26,6 +26,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 class ConfigError(RuntimeError):
@@ -153,7 +154,7 @@ def load(env: dict[str, str] | None = None) -> Config:
     return Config(
         stand_id=stand_id,
         stand_key=stand_key,
-        base_url=env.get("ADNOVA_BASE_URL", "https://dashboard.adnovatech.online").rstrip("/"),
+        base_url=_secure_base_url(env.get("ADNOVA_BASE_URL", "https://dashboard.adnovatech.online")),
         cache_dir=cache_dir,
         trusted_keys=_load_keys(env.get("ADNOVA_TRUSTED_KEYS", "")),
         admin_user=env.get("ADNOVA_ADMIN_USER", "admin"),
@@ -163,6 +164,33 @@ def load(env: dict[str, str] | None = None) -> Config:
         local_host=env.get("ADNOVA_LOCAL_HOST", "127.0.0.1"),
         local_port=_int(env, "ADNOVA_LOCAL_PORT", 8080),
     )
+
+
+def is_secure_url(url: str) -> bool:
+    """
+    True for an https URL, or plain http only to a loopback host.
+
+    Every call to Dashboard and every media download must be TLS: the device
+    authenticates requests with its stand key and trusts the schedules it gets
+    back, so plaintext http would let anyone on the path read the key's use and
+    feed a forged plan. Loopback http is allowed for the local kiosk server and
+    for tests, where there is no network to attack.
+    """
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https":
+        return True
+    return parsed.scheme == "http" and host in ("127.0.0.1", "localhost", "::1")
+
+
+def _secure_base_url(raw: str) -> str:
+    url = raw.rstrip("/")
+    if not is_secure_url(url):
+        raise ConfigError(
+            "ADNOVA_BASE_URL must be https:// — plaintext http would let a "
+            f"network attacker read the stand key's use and forge schedules; got {raw!r}."
+        )
+    return url
 
 
 def _load_keys(raw: str) -> dict[str, str]:

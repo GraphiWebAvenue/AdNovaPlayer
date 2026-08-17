@@ -34,9 +34,11 @@ import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
+from .config import is_secure_url
 from .probe import probe_media
 
 log = logging.getLogger("adnova.cache")
@@ -129,6 +131,16 @@ class MediaCache:
         """
         if self.has(need.checksum_sha256):
             return True
+
+        # Media is fetched over TLS or not at all. The URL comes from a signed
+        # manifest, so this is defence in depth: a misconfigured or compromised
+        # origin cannot make the device pull ad bytes over plaintext http.
+        if not is_secure_url(need.url):
+            log.error(
+                "Refusing %s: media URL is not https (%s).",
+                need.checksum_sha256[:12], urlparse(need.url).scheme or "?",
+            )
+            return False
 
         if need.size_bytes and need.size_bytes > MAX_MEDIA_BYTES:
             log.warning(
