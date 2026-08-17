@@ -360,6 +360,12 @@ class Agent:
         if missing:
             log.warning("%d media file(s) not yet cached: %s", len(missing), ", ".join(missing))
 
+        # Decode-probe the newly-cached media on this background thread, so
+        # an undecodable file (valid checksum, but a codec/container the
+        # device can't play) is caught and treated as missing here — not
+        # discovered as a black frame at its paid slot.
+        self._cache.probe_all(need.checksum_sha256 for need in needs)
+
     # ── Heartbeat loop ───────────────────────────────────────────────────
 
     def _heartbeat_loop(self) -> None:

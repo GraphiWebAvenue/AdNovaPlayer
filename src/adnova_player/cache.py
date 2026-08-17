@@ -31,10 +31,13 @@ import hashlib
 import logging
 import os
 import tempfile
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+
+from .probe import probe_media
 
 log = logging.getLogger("adnova.cache")
 
@@ -68,13 +71,25 @@ class MediaCache:
     re-downloading it.
     """
 
-    def __init__(self, directory: Path, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        client: httpx.Client | None = None,
+        probe: Callable[[Path], tuple[bool, str]] | None = None,
+    ) -> None:
         self._dir = directory
         self._dir.mkdir(parents=True, exist_ok=True)
         self._client = client or httpx.Client(
             timeout=httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0),
             follow_redirects=False,
         )
+        # Decode-probe results (see probe.py). `_probed` is every checksum
+        # we've already probed; `_undecodable` is the subset that failed and
+        # must be treated as if it were missing. `probe` is injectable for
+        # tests so no real ffprobe is needed.
+        self._probe = probe or probe_media
+        self._probed: set[str] = set()
+        self._undecodable: set[str] = set()
 
     # ── Reading ──────────────────────────────────────────────────────────
 
@@ -85,6 +100,18 @@ class MediaCache:
         """Present on disk and still matching its name. Cheap enough per slot."""
         path = self.path_for(checksum)
         return path.exists() and self._verify(path, checksum)
+
+    def is_playable(self, checksum: str) -> bool:
+        """
+        Present, matching its checksum, AND not known-undecodable.
+
+        The playback layer resolves a slot only if this is true; a file
+        proven undecodable behaves exactly like one still downloading, so
+        the fallback covers its slot instead of a black frame. A file not
+        yet probed is trusted (the checksum already vouches for its bytes);
+        only a definitive probe failure quarantines it.
+        """
+        return checksum not in self._undecodable and self.has(checksum)
 
     def local_url_path(self, checksum: str) -> str:
         """The path the kiosk browser fetches this from, on the local server."""
@@ -125,6 +152,34 @@ class MediaCache:
             results[need.checksum_sha256] = self.ensure(need)
         return results
 
+    def probe_all(self, checksums: Iterable[str]) -> None:
+        """
+        Decode-probe every cached file we have not probed yet.
+
+        Runs on the fetch loop (background), never the hot path. Each file
+        is probed once; a failure adds it to the quarantine set so
+        is_playable() starts returning False for it. Missing files are
+        skipped — they'll be probed once they download.
+        """
+        for checksum in checksums:
+            if checksum in self._probed:
+                continue
+            path = self.path_for(checksum)
+            if not (path.exists() and self._verify(path, checksum)):
+                continue
+            self._probed.add(checksum)
+            ok, detail = self._probe(path)
+            if not ok:
+                self._undecodable.add(checksum)
+                log.error(
+                    "Media %s failed the decode probe (%s); quarantined.",
+                    checksum[:12], detail,
+                )
+
+    def undecodable_count(self) -> int:
+        """How many cached files failed the decode probe (for the heartbeat)."""
+        return len(self._undecodable)
+
     # ── Housekeeping ─────────────────────────────────────────────────────
 
     def evict_except(self, keep: set[str]) -> int:
@@ -141,6 +196,10 @@ class MediaCache:
                 try:
                     path.unlink()
                     removed += 1
+                    # Drop any probe verdict so a later re-download of the
+                    # same checksum is probed afresh rather than trusted.
+                    self._probed.discard(path.name)
+                    self._undecodable.discard(path.name)
                 except OSError as exc:
                     log.warning("Could not evict %s: %s", path.name, exc)
         if removed:

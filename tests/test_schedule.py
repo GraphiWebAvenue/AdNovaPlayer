@@ -55,6 +55,10 @@ class FakeCache(MediaCache):
     def has(self, checksum: str) -> bool:
         return checksum in self._present
 
+    def is_playable(self, checksum: str) -> bool:
+        # A stub has no decode probe; present means playable.
+        return checksum in self._present
+
     def local_url_path(self, checksum: str) -> str:
         return f"/media/{checksum}"
 

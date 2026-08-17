@@ -72,7 +72,7 @@ def fallback_item(media: Media | None, cache: MediaCache) -> PlayItem:
     ready all show *something*, never black. The loop repeats until real
     content returns.
     """
-    if media is None or not cache.has(media.checksum_sha256):
+    if media is None or not cache.is_playable(media.checksum_sha256):
         return FALLBACK
 
     is_video = media.type == "video"
@@ -98,7 +98,7 @@ def test_item(media: Media | None, cache: MediaCache, muted: bool = True) -> Pla
     still downloading never blanks the screen. Loops like the fallback, but
     ranks above everything: the operator triggered it to see one ad now.
     """
-    if media is None or not cache.has(media.checksum_sha256):
+    if media is None or not cache.is_playable(media.checksum_sha256):
         return None
 
     is_video = media.type == "video"
@@ -232,9 +232,10 @@ class Schedule:
     def _resolve(self, slot: Slot) -> PlayItem | None:
         """A slot becomes a PlayItem only if its media is cached and valid."""
         checksum = slot.media.checksum_sha256
-        if not self._cache.has(checksum):
-            # The file is not (yet) here. The fallback covers the gap, and
-            # the download loop will have it before its next turn.
+        if not self._cache.is_playable(checksum):
+            # The file is not here yet, or it failed the decode probe. Either
+            # way the fallback covers the gap; the download/probe loop sorts
+            # it out before the slot's next turn.
             return None
 
         is_video = slot.media.type == "video"
