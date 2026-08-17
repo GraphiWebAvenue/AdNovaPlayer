@@ -89,6 +89,65 @@ MPV_ARGS = [
 ]
 
 
+class FreezeDetector:
+    """
+    Decide when the picture has frozen and mpv must be nudged back to life.
+
+    mpv can sit on a single decoded frame with its clock stopped — a stalled
+    V4L2 decoder, a half-opened file, a lost Wayland surface — and from the
+    outside the shop screen just holds one image forever while the schedule
+    rolls on underneath it. Nobody is standing there to notice.
+
+    This reads no pixels; it watches mpv's own playback clock. A video that
+    should be advancing must keep moving `time-pos`. If the clock stops for
+    longer than `freeze_seconds` while mpv is neither paused nor idle, the
+    picture has frozen and the caller is told to recover. A looping clip is
+    fine — its clock wraps to zero each loop, which still counts as movement.
+
+    Stills are exempt: an image legitimately never advances, so only items the
+    player marked as a video are watched, and the black fallback never is.
+    """
+
+    def __init__(self, freeze_seconds: float = 12.0) -> None:
+        self._freeze_seconds = freeze_seconds
+        self._last_pos: float | None = None
+        self._since: float | None = None
+
+    def reset(self) -> None:
+        """Forget history — called on every genuine item change or recovery."""
+        self._last_pos = None
+        self._since = None
+
+    def observe(
+        self, now: float, is_video: bool, playing: bool, time_pos: float | None
+    ) -> bool:
+        """
+        Feed one reading; return True when a recovery is warranted.
+
+        now        monotonic seconds
+        is_video   the current item is a video (an image cannot freeze)
+        playing    mpv holds a real file and is not paused/idle
+        time_pos   mpv's playback clock, or None when it could not be read
+        """
+        if not (is_video and playing) or time_pos is None:
+            # Nothing that can freeze, or no clock to judge by. Start clean so
+            # a later stall is timed from now, not from stale history.
+            self.reset()
+            return False
+
+        if self._last_pos is None or abs(time_pos - self._last_pos) > 0.05:
+            # First reading, or the clock moved (including a loop wrap): healthy.
+            self._last_pos = time_pos
+            self._since = now
+            return False
+
+        # The clock has not moved since we first saw this position.
+        if self._since is not None and (now - self._since) >= self._freeze_seconds:
+            self.reset()
+            return True
+        return False
+
+
 def launch_mpv() -> subprocess.Popen:
     # A throwaway socket from a previous run would make mpv refuse to bind.
     try:
@@ -108,6 +167,43 @@ def mpv_send(command: list) -> None:
         sock.close()
     except OSError:
         pass
+
+
+def mpv_get(prop: str) -> float | None:
+    """
+    Read one numeric property back over the IPC socket.
+
+    Unlike mpv_send this waits for the reply, so the watchdog can read the
+    playback clock. Any failure — no socket, a timeout, a non-numeric or
+    error reply — returns None, which the detector treats as "no clock to
+    judge by" rather than a freeze, so a flaky read never triggers a reload.
+    """
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect(IPC_SOCK)
+        sock.sendall((json.dumps({"command": ["get_property", prop]}) + "\n").encode())
+        buf = b""
+        while b"\n" in buf or not buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+            for line in buf.split(b"\n"):
+                if not line.strip():
+                    continue
+                msg = json.loads(line)
+                if msg.get("error") == "success" and isinstance(msg.get("data"), (int, float)):
+                    sock.close()
+                    return float(msg["data"])
+                if "error" in msg:
+                    sock.close()
+                    return None
+            break
+        sock.close()
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def get_state() -> dict | None:
@@ -152,6 +248,9 @@ def main() -> None:
     mpv = launch_mpv()
     wait_for_socket(time.monotonic() + 8)
     current: str | None = None
+    last_state: dict | None = None
+    detector = FreezeDetector()
+    consecutive = 0
 
     while True:
         # mpv is the one thing that must never stay dead: relaunch it and
@@ -160,6 +259,8 @@ def main() -> None:
             mpv = launch_mpv()
             wait_for_socket(time.monotonic() + 8)
             current = None
+            detector.reset()
+            consecutive = 0
 
         state = get_state()
         if state is None:
@@ -169,7 +270,33 @@ def main() -> None:
         key = key_of(state)
         if key != current:
             current = key
+            last_state = state
             show(state)
+            detector.reset()          # a new item is healthy by definition
+            consecutive = 0
+        else:
+            # Same item still up: make sure it is actually playing, not frozen
+            # on a decoded frame while the clock is dead.
+            is_video = bool(last_state and last_state.get("kind") == "video")
+            playing = is_video and last_state.get("src") not in (None, "/fallback")
+            pos = mpv_get("time-pos") if is_video else None
+            if detector.observe(time.monotonic(), is_video, playing, pos):
+                consecutive += 1
+                if consecutive >= 2:
+                    # A reload did not thaw it: the decoder or the surface is
+                    # wedged, so bring mpv back from scratch.
+                    try:
+                        mpv.kill()
+                    except OSError:
+                        pass
+                    mpv = launch_mpv()
+                    wait_for_socket(time.monotonic() + 8)
+                    current = None
+                    consecutive = 0
+                elif last_state is not None:
+                    # First strike: reload the same file in place, which
+                    # reopens the demuxer and decoder without a full restart.
+                    show(last_state)
 
         time.sleep(1)
 
