@@ -117,6 +117,11 @@ class Agent:
         # from what Dashboard sends. The manifest carries the hours; the
         # heartbeat control channel carries the takeover.
         self._emergency: PlayItem | None = None
+        # When a takeover is scheduled to begin. None means "now"; a future
+        # time makes every stand flip to it at the same trusted-clock instant,
+        # so a coordinated campaign appears in sync across the fleet rather
+        # than drifting by each device's heartbeat timing.
+        self._emergency_at: datetime | None = None
         self._operating_hours: dict | None = None
         self._timezone = "UTC"
         # The current gap-filler, rebuilt whenever a plan installs. Starts as
@@ -161,8 +166,9 @@ class Agent:
         screen by the next poll.
         """
         with self._lock:
+            emergency = self._active_emergency()
             offline = self._offline_expired(self._schedule.manifest)
-            if self._emergency is None and not offline:
+            if emergency is None and not offline:
                 return self._schedule
             # Rebuild a view with the takeover and/or the offline-expiry flag
             # layered on, without mutating the stored plan — both are
@@ -171,11 +177,26 @@ class Agent:
             return Schedule(
                 self._schedule.manifest,
                 self._cache,
-                emergency=self._emergency,
+                emergency=emergency,
                 fallback=self._fallback,
                 test=self._test,
                 offline_expired=offline,
             )
+
+    def _active_emergency(self) -> PlayItem | None:
+        """
+        The takeover if it is due, else None.
+
+        A takeover with a future start time is held until that instant, judged
+        by the corrected clock — so a scheduled, fleet-wide takeover flips on
+        every stand together instead of whenever each one's heartbeat happened
+        to land. An immediate takeover (no start time) is active at once.
+        """
+        if self._emergency is None:
+            return None
+        if self._emergency_at is not None and self._trusted_now() < self._emergency_at:
+            return None
+        return self._emergency
 
     def _trusted_now(self) -> datetime:
         """
@@ -621,6 +642,11 @@ class Agent:
             "refetch": (None, True),  # handled in-process, not via a command
             "restart": (["sudo", "-n", "systemctl", "restart", "adnova-player"], False),
             "reboot": (["sudo", "-n", "systemctl", "reboot"], False),
+            # Power the whole board off from Dashboard — for a stand taken out
+            # of service. There is no remote power-on (the board is off), so
+            # this is deliberately paired in the UI with a note that turning it
+            # back on needs someone on site or a smart plug.
+            "shutdown": (["sudo", "-n", "systemctl", "poweroff"], False),
             "update": (["sudo", "-n", "systemctl", "start", "adnova-update.service"], True),
             # --no-block: an OS update runs for minutes; without it, starting
             # the oneshot unit would block this heartbeat until apt finished
@@ -657,6 +683,10 @@ class Agent:
                 continue
             if name == "restart_kiosk":
                 ok, detail = self._request_kiosk_restart()
+                acks.append({"id": cid, "status": "done" if ok else "error", "detail": detail})
+                continue
+            if name in ("screen_on", "screen_off"):
+                ok, detail = self._request_screen(name == "screen_on")
                 acks.append({"id": cid, "status": "done" if ok else "error", "detail": detail})
                 continue
 
@@ -741,6 +771,7 @@ class Agent:
     # dir — /var/lib/adnova-player — not /tmp. The helper (running in the
     # desktop session, in the adnova group) reads the request from there.
     _KIOSK_REQ = Path("/var/lib/adnova-player/ipc/restart-kiosk.req")
+    _SCREEN_REQ = Path("/var/lib/adnova-player/ipc/screen.req")
 
     def _capture_ack(self) -> tuple[bool, str]:
         """
@@ -760,6 +791,23 @@ class Agent:
         except OSError as exc:
             return False, f"could not request a display restart: {exc}"
         return True, "display restart requested"
+
+    def _request_screen(self, on: bool) -> tuple[bool, str]:
+        """
+        Ask the in-session helper to power the panel on or off.
+
+        The panel is normally driven autonomously by the stand's operating
+        hours; this is a manual override an operator can reach from Dashboard
+        (a maintenance blackout, a late event). The player is hardened and
+        cannot touch the Wayland session, so it drops a one-word request in its
+        state dir for the in-session helper to act on (wlr-randr / CEC / DPMS).
+        """
+        try:
+            self._SCREEN_REQ.parent.mkdir(parents=True, exist_ok=True)
+            self._SCREEN_REQ.write_text("on" if on else "off")
+        except OSError as exc:
+            return False, f"could not request a screen change: {exc}"
+        return True, f"screen {'on' if on else 'off'} requested"
 
     def run_self_test(self) -> list[diagnostics.Check]:
         """
@@ -820,13 +868,17 @@ class Agent:
         A null or absent value clears it — so an operator ending a closure
         notice simply stops sending it, and the scheduled plan returns on
         the next poll. A takeover names its media by checksum, and it plays
-        only once that media is cached and valid, exactly like a slot.
+        only once that media is cached and valid, exactly like a slot. An
+        optional `starts_at` holds it until that instant so a fleet-wide
+        takeover flips on every stand together (synchronised), judged by the
+        corrected clock.
         """
         if not isinstance(emergency, dict):
             if self._emergency is not None:
                 log.info("Takeover cleared; returning to the schedule.")
             with self._lock:
                 self._emergency = None
+                self._emergency_at = None
             return
 
         checksum = str(emergency.get("checksum_sha256") or "")
@@ -850,9 +902,27 @@ class Agent:
             priority="urgent",
             label=emergency.get("label"),
         )
+        starts_at = self._parse_time(emergency.get("starts_at"))
         with self._lock:
             self._emergency = item
-        log.info("Takeover active.")
+            self._emergency_at = starts_at
+        if starts_at is not None:
+            log.info("Takeover scheduled for %s.", starts_at.isoformat())
+        else:
+            log.info("Takeover active.")
+
+    @staticmethod
+    def _parse_time(value: object) -> datetime | None:
+        """An ISO-8601 instant from the control channel, or None if absent/bad."""
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        # Treat a naive time as UTC, so the comparison against the corrected
+        # clock (always tz-aware UTC) never raises on a mixed pair.
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
     def _apply_test(self, test: dict | None) -> None:
         """

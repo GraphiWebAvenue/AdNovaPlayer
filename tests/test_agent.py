@@ -306,6 +306,50 @@ def test_a_sustained_auth_rejection_triggers_reenroll_once(tmp_path):
     assert fired == [True]
 
 
+def test_shutdown_is_a_whitelisted_deferred_command(tmp_path):
+    agent, _ = make_agent(tmp_path)
+    ran = []
+    agent._exec = lambda argv: (ran.append(argv), (True, ""))[1]
+
+    agent._run_commands([{"id": 1, "command": "shutdown"}])
+
+    assert ran == [["sudo", "-n", "systemctl", "poweroff"]]
+    # A power-off cannot ack — the process is gone — so nothing is queued.
+    assert agent._take_acks() == []
+
+
+def test_screen_commands_write_a_request_for_the_in_session_helper(tmp_path):
+    agent, _ = make_agent(tmp_path)
+    agent._SCREEN_REQ = tmp_path / "ipc" / "screen.req"
+
+    agent._run_commands([{"id": 5, "command": "screen_off"}])
+    assert agent._SCREEN_REQ.read_text() == "off"
+    acks = agent._take_acks()
+    assert acks[0]["id"] == 5 and acks[0]["status"] == "done"
+
+    agent._run_commands([{"id": 6, "command": "screen_on"}])
+    assert agent._SCREEN_REQ.read_text() == "on"
+
+
+def test_a_scheduled_takeover_is_held_until_its_time_then_flips(tmp_path):
+    csum = "f" * 64
+    agent, _ = make_agent(tmp_path)
+    agent._cache.has = lambda c: c == csum
+    agent._now = lambda: NOW
+
+    agent._apply_emergency({
+        "url": "https://x/e", "checksum_sha256": csum, "type": "image",
+        "starts_at": (NOW + timedelta(minutes=1)).isoformat(),
+    })
+
+    # Before its time, the takeover is held — the screen is not on it yet.
+    assert agent.schedule().now_playing(NOW).priority != "urgent"
+
+    # At its time, every stand flips together — here, this one takes over.
+    agent._now = lambda: NOW + timedelta(minutes=2)
+    assert agent.schedule().now_playing(NOW + timedelta(minutes=2)).priority == "urgent"
+
+
 def test_a_failing_cycle_does_not_propagate(tmp_path):
     agent, _ = make_agent(tmp_path)
 
