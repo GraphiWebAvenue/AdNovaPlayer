@@ -35,9 +35,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .api import DashboardApi
 from . import diagnostics
+from .api import DashboardApi
 from .cache import MediaCache, MediaNeed
+from .capture import ScreenCapture, capture_proof
 from .config import Config
 from .event_log import EventLog
 from .health import read as read_health
@@ -72,6 +73,10 @@ class Agent:
         # Important device events, shipped out-of-band after a good heartbeat.
         self._events = EventLog(self._config.log_dir / "events.json")
         self._screen = screen or Screen()
+        # Verified capture (#8/#9/#11): a frame grabber + the feature flag.
+        # Off by default; when on, a played slot attaches a screenshot hash.
+        self._capture = ScreenCapture()
+        self._verify_capture = self._config.verify_capture
         # Called once when the stand key has been rejected long enough to be
         # considered gone, so the process can drop back into enrollment for a
         # fresh key. Injected by main.py; absent in tests, where the decision
@@ -305,12 +310,18 @@ class Agent:
         slot_id, started_iso, started_dt, duration = open_play
         played = max(0.0, (ended - started_dt).total_seconds())
         outcome = "played" if (not duration or played >= 0.9 * duration) else "partial"
+        # Billing-grade proof, only for a full play and only when the stand is
+        # opted in. Best-effort: a failed grab just leaves the play unverified.
+        verification = None
+        if self._verify_capture and outcome == "played":
+            verification = capture_proof(self._capture)
         self._playback.finalize(
             slot_id=slot_id,
             started_at=started_iso,
             ended_at=ended.isoformat(),
             played_seconds=round(played, 1),
             outcome=outcome,
+            verification=verification,
         )
 
     # ── Startup ──────────────────────────────────────────────────────────
@@ -1116,6 +1127,7 @@ class Agent:
                     "outcome": e.outcome,
                     "schedule_version": e.schedule_version,
                     "detail": e.detail,
+                    "verification": e.verification,
                 }
                 for e in batch
             ],

@@ -1,6 +1,6 @@
 [project]
 name = "adnova-player"
-version = "1.5.0"
+version = "1.6.0"
 description = "AdNova Player — plays the schedule on a Raspberry Pi at a stand"
 requires-python = ">=3.11"
 dependencies = [

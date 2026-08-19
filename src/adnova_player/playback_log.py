@@ -40,6 +40,10 @@ class Entry:
     played_seconds: float | None = None
     schedule_version: int | None = None
     detail: str | None = None
+    # Verified capture (#8/#9/#11): optional proof the ad rendered on screen,
+    # {"kind": "screenshot", "hash": "<sha256>", "captured_at": "<iso>"}.
+    # None = unverified. Defaulted so rows written by older builds still load.
+    verification: dict | None = None
 
 
 class PlaybackLog:
@@ -73,6 +77,7 @@ class PlaybackLog:
         played_seconds: float,
         outcome: str = "played",
         detail: str | None = None,
+        verification: dict | None = None,
     ) -> None:
         """
         Close an open entry (one recorded on start with ended_at=None) with
@@ -100,6 +105,7 @@ class PlaybackLog:
                         played_seconds=played_seconds,
                         schedule_version=e.schedule_version,
                         detail=detail or e.detail,
+                        verification=verification or e.verification,
                     )
                     self._flush()
                     return

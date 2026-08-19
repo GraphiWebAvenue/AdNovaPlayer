@@ -108,3 +108,40 @@ def test_an_unreadable_log_is_ignored_not_fatal(tmp_path):
     # A corrupt log must not stop the player; it starts empty.
     log = PlaybackLog(path)
     assert log.pending() == 0
+
+
+def test_finalize_attaches_verification(tmp_path):
+    """A played slot can carry billing-grade proof through finalize()."""
+    path = tmp_path / "playback.json"
+    log = PlaybackLog(path)
+    log.record(entry(1))
+    log.finalize(
+        slot_id=1,
+        started_at="2026-08-15T12:00:00+00:00",
+        ended_at="2026-08-15T12:00:30+00:00",
+        played_seconds=30.0,
+        outcome="played",
+        verification={"kind": "screenshot", "hash": "abc123", "captured_at": "t1"},
+    )
+    e = log.take_batch()[0]
+    assert e.verification == {"kind": "screenshot", "hash": "abc123", "captured_at": "t1"}
+
+
+def test_rows_without_verification_still_load(tmp_path):
+    """Rows written by an older build (no verification key) load unverified."""
+    import json
+
+    path = tmp_path / "playback.json"
+    path.write_text(
+        json.dumps([
+            {
+                "slot_id": 1, "ad_id": 10,
+                "started_at": "2026-08-15T12:00:00+00:00",
+                "ended_at": None, "outcome": "played",
+            }
+        ]),
+        encoding="utf-8",
+    )
+    log = PlaybackLog(path)
+    assert log.pending() == 1
+    assert log.take_batch()[0].verification is None

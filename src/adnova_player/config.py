@@ -96,6 +96,12 @@ class Config:
     local_host: str = "127.0.0.1"
     local_port: int = 8080
 
+    # Verified capture (#8/#9/#11): when on, each played slot attaches a
+    # screenshot hash to its playback log as billing-grade proof-of-render.
+    # Feature-flag default OFF for the whole fleet (per Player rules); a stand
+    # opts in via ADNOVA_VERIFY_CAPTURE at provisioning.
+    verify_capture: bool = False
+
     @property
     def manifest_url(self) -> str:
         return f"{self.base_url}/api/v1/player/{self.stand_id}/manifest"
@@ -167,7 +173,15 @@ def load(env: dict[str, str] | None = None) -> Config:
         heartbeat_seconds=_int(env, "ADNOVA_HEARTBEAT_SECONDS", 60),
         local_host=env.get("ADNOVA_LOCAL_HOST", "127.0.0.1"),
         local_port=_int(env, "ADNOVA_LOCAL_PORT", 8080),
+        verify_capture=_bool(env, "ADNOVA_VERIFY_CAPTURE", default=False),
     )
+
+
+def _bool(env: dict[str, str], key: str, *, default: bool) -> bool:
+    raw = env.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def is_secure_url(url: str) -> bool:

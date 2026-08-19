@@ -21,11 +21,13 @@ a few kilobytes, not a megabyte off a shop's uplink every few minutes.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 log = logging.getLogger("adnova.capture")
@@ -115,3 +117,27 @@ class ScreenCapture:
         except Exception:  # noqa: BLE001 — a bad grab must not raise into the loop
             log.warning("Could not downscale a screenshot; sending nothing this cycle.")
             return None
+
+
+def capture_proof(capture: ScreenCapture) -> dict | None:
+    """
+    Verified capture (#8/#9/#11): grab a frame and return a proof record that
+    the ad was on screen — {"kind": "screenshot", "hash": sha256(frame),
+    "captured_at": <iso>} — for the playback log's `verification` field.
+
+    Best-effort and off the hot path: returns None if no grabber works or
+    anything fails, so a played impression is still recorded, just unverified.
+    Hashing the (downscaled) frame keeps the proof tiny while still tying the
+    billed impression to a real pixel state at play time.
+    """
+    try:
+        frame = capture.grab()
+    except Exception:  # noqa: BLE001 — proof is a nicety; never break playback
+        return None
+    if not frame:
+        return None
+    return {
+        "kind": "screenshot",
+        "hash": hashlib.sha256(frame).hexdigest(),
+        "captured_at": datetime.now(tz=UTC).isoformat(),
+    }
