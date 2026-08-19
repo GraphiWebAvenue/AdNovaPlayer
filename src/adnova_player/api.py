@@ -114,6 +114,16 @@ class DashboardApi:
             return None
         return _json_or_none(response)
 
+    def send_logs(self, body: dict[str, Any]) -> dict[str, Any] | None:
+        """
+        Ship a batch of important device events. Best-effort like the rest —
+        None on any failure, and the caller keeps the events for the next try.
+        """
+        response = self._post(self._config.logs_url, body)
+        if response is None:
+            return None
+        return _json_or_none(response)
+
     def get_screenshot_policy(self) -> dict[str, Any] | None:
         """
         What the operator wants right now: {"mode": "idle"|"once"|"live",

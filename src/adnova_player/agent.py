@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import threading
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,6 +39,7 @@ from .api import DashboardApi
 from . import diagnostics
 from .cache import MediaCache, MediaNeed
 from .config import Config
+from .event_log import EventLog
 from .health import read as read_health
 from .hours import screen_should_be_on
 from .manifest import Manifest, UntrustedManifest
@@ -67,6 +69,8 @@ class Agent:
         self._api = api
         self._cache = cache
         self._playback = playback
+        # Important device events, shipped out-of-band after a good heartbeat.
+        self._events = EventLog(self._config.log_dir / "events.json")
         self._screen = screen or Screen()
         # Called once when the stand key has been rejected long enough to be
         # considered gone, so the process can drop back into enrollment for a
@@ -388,6 +392,7 @@ class Agent:
             # The important refusal: somebody handed us a plan we cannot
             # prove Dashboard wrote, or an older one replayed. Keep playing.
             log.error("Refusing a manifest: %s", exc)
+            self._events.record("manifest.refused", "security", str(exc))
             return self._config.manifest_poll_seconds
         except (ValueError, KeyError) as exc:
             log.warning("Manifest did not parse (%s); keeping the current plan.", exc)
@@ -622,6 +627,27 @@ class Agent:
         # would ignore one if it did.
         self._run_commands(response.get("commands"))
 
+        # Ship any buffered important events now the network is proven up
+        # (watchdog priority: logs go out on the next successful heartbeat).
+        self._safe(self._upload_events, default=None)
+
+    def _upload_events(self) -> None:
+        batch = self._events.take_batch()
+        if not batch:
+            return
+        body = {
+            "contract_version": "player_logs.v1",
+            "stand_id": self._config.stand_id,
+            "player_version": _version(),
+            "batch_id": uuid.uuid4().hex,
+            "events": [
+                {"event_id": e.event_id, "at": e.at, "sev": e.sev, "code": e.code, "detail": e.detail}
+                for e in batch
+            ],
+        }
+        if self._api.send_logs(body) is not None:
+            self._events.ack(batch)
+
     def _run_commands(self, commands: object) -> None:
         """
         Execute the whitelisted operations the heartbeat delivered.
@@ -700,6 +726,7 @@ class Agent:
                 acks.append({"id": cid, "status": "done", "detail": done_detail["refetch"]})
             elif survives:
                 ok, detail = self._exec(argv)
+                self._events.record("command.executed", "info", name)
                 acks.append({
                     "id": cid,
                     "status": "done" if ok else "error",
@@ -858,6 +885,7 @@ class Agent:
             "Stand key rejected %d times in a row; re-enrolling for a fresh key.",
             self._api.auth_failures,
         )
+        self._events.record("auth.lost", "security", f"{self._api.auth_failures} rejections")
         if self._on_auth_lost is not None:
             self._safe(self._on_auth_lost, default=None)
 

@@ -40,6 +40,9 @@ class FakeApi:
         self.sent_playback.append(body)
         return {"ok": True}
 
+    def send_logs(self, body):
+        return {"ok": True, "accepted": len(body.get("events", []))}
+
 
 def make_agent(tmp_path, api=None):
     cache = MediaCache(tmp_path / "media")
@@ -270,6 +273,16 @@ def test_the_heartbeat_reports_clock_offset_only_after_a_fetch(tmp_path):
                        agent._now())
 
     assert agent._heartbeat_body()["clock_offset_seconds"] == -90.0
+
+
+def test_important_events_are_shipped_and_acked_on_heartbeat(tmp_path):
+    api = FakeApi(heartbeat={"ok": True})
+    agent, _ = make_agent(tmp_path, api)
+    agent._events.record("manifest.refused", "security", "bad sig")
+
+    agent._heartbeat_once()
+
+    assert agent._events.pending() == 0  # shipped, then dropped on the ack
 
 
 def test_uploaded_playback_is_acked(tmp_path):

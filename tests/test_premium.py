@@ -79,6 +79,9 @@ class TakeoverApi:
     def send_playback(self, _body):
         return {"ok": True}
 
+    def send_logs(self, _body):
+        return {"ok": True}
+
 
 def test_a_takeover_from_the_control_channel_goes_on_screen(tmp_path):
     body = b"an emergency notice image"

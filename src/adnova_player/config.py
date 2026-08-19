@@ -109,6 +109,10 @@ class Config:
         return f"{self.base_url}/api/v1/player/playback"
 
     @property
+    def logs_url(self) -> str:
+        return f"{self.base_url}/api/v1/player/logs"
+
+    @property
     def screenshot_url(self) -> str:
         return f"{self.base_url}/api/v1/player/screenshot"
 
