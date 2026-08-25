@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import json
 import logging
+import ssl
 from typing import Any
 
 import httpx
 
+from . import event_log
 from .config import Config
 from .signing import sign
 
@@ -186,10 +188,22 @@ class DashboardApi:
             # The expected case on a shop network: report it and let the
             # loop carry on with the cached plan.
             log.warning("%s %s failed: %s", method, path, exc)
+            # A TLS failure is not the same class of problem as a flaky link:
+            # a certificate that stopped verifying on the way to Dashboard is
+            # what an interception attempt looks like from in here, so it is
+            # recorded as security rather than left inside a transport error.
+            if _is_tls_failure(exc):
+                event_log.record(
+                    "api.tls.refused", "security",
+                    f"{method} {path} refused the server certificate: {type(exc).__name__}.",
+                )
+            else:
+                event_log.record("api.unreachable", "warn", f"{method} {path}: {type(exc).__name__}")
             return None
 
         if response.status_code >= 500:
             log.warning("%s %s → HTTP %s (server side)", method, path, response.status_code)
+            event_log.record("api.server_error", "warn", f"{method} {path} → {response.status_code}")
             return None
         if response.status_code in (401, 403):
             # Either the clock has drifted past the signing window or the
@@ -201,14 +215,37 @@ class DashboardApi:
                 "%s %s → %s: request rejected as unauthenticated (%d in a row).",
                 method, path, response.status_code, self._auth_failures,
             )
+            event_log.record(
+                "api.auth.rejected", "security",
+                f"{method} {path} → {response.status_code} ({self._auth_failures} in a row).",
+            )
             return None
         if response.status_code >= 400:
             log.warning("%s %s → HTTP %s", method, path, response.status_code)
+            event_log.record("api.rejected", "warn", f"{method} {path} → {response.status_code}")
             return None
 
         # An accepted response proves the key still works: clear the streak.
         self._auth_failures = 0
         return response
+
+
+def _is_tls_failure(exc: Exception) -> bool:
+    """
+    Does this transport error mean the certificate was refused?
+
+    httpx wraps the ssl module's error rather than exposing a type for it, so
+    the cause chain is walked instead of matching on strings — a message match
+    would quietly stop working the first time OpenSSL rewords something.
+    """
+    seen = 0
+    current: BaseException | None = exc
+    while current is not None and seen < 5:
+        if isinstance(current, ssl.SSLError) or type(current).__name__ == "SSLError":
+            return True
+        current = current.__cause__ or current.__context__
+        seen += 1
+    return isinstance(exc, httpx.ConnectError) and "certificate" in str(exc).lower()
 
 
 def _json_or_none(response: httpx.Response) -> dict[str, Any] | None:

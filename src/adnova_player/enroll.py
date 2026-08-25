@@ -35,6 +35,8 @@ from pathlib import Path
 
 import httpx
 
+from . import event_log
+
 log = logging.getLogger("adnova.enroll")
 
 _TIMEOUT = httpx.Timeout(connect=10.0, read=20.0, write=20.0, pool=10.0)
@@ -110,12 +112,22 @@ class Enroller:
 
         if response.status_code == 403:
             log.info("Enrollment is closed on the server; waiting for it to open.")
+            event_log.record("enroll.closed", "info", "Dashboard is not accepting new devices.")
             return "closed"
         if response.status_code >= 400:
             log.warning("Enrollment returned HTTP %s", response.status_code)
+            event_log.record("enroll.failed", "warn", f"Introduction returned HTTP {response.status_code}.")
             return None
 
-        return (response.json() or {}).get("status")
+        status = (response.json() or {}).get("status")
+        # The first line of a device's story: this hardware, this fingerprint,
+        # asking to join. Recorded here so an operator can later match the
+        # device that was adopted against the device that asked.
+        event_log.record(
+            "enroll.introduced", "warn",
+            f"Introduced {socket.gethostname()} ({_model()}) — Dashboard says {status!r}.",
+        )
+        return status
 
     def poll(self, client: httpx.Client) -> Adoption | str | None:
         """
@@ -137,6 +149,14 @@ class Enroller:
             return str(data.get("status", "pending"))
 
         signing = data.get("signing_key") or {}
+        # Adoption is the single most security-relevant moment in the device's
+        # life: it is when it is handed the key that speaks for a stand.
+        event_log.record(
+            "enroll.adopted", "security",
+            f"Adopted onto stand {data.get('stand_id')} "
+            f"(signing key {signing.get('key_id') or 'none'}).",
+            ref=int(data["stand_id"]) if str(data.get("stand_id", "")).isdigit() else None,
+        )
         return Adoption(
             stand_id=int(data["stand_id"]),
             stand_key=str(data["stand_key"]),

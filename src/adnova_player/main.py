@@ -22,6 +22,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import audit, event_log
 from .agent import Agent
 from .api import DashboardApi
 from .cache import MediaCache
@@ -40,6 +41,10 @@ def _configure_logging() -> None:
         level=os.environ.get("ADNOVA_LOG_LEVEL", "INFO"),
         format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
     )
+    # Everything the process logs at warning or worse is mirrored into the
+    # forensic trail as well as the journal, so a failure nobody thought to
+    # instrument still reaches Dashboard. See audit.py.
+    audit.install()
 
 
 def build(config: Config) -> tuple[Agent, object]:
@@ -72,6 +77,16 @@ def build(config: Config) -> tuple[Agent, object]:
 def main() -> int:
     _configure_logging()
 
+    # The trail opens before the config is read, because the most interesting
+    # thing a device can do is fail to start. Until load() succeeds we do not
+    # know the configured cache dir, so this uses the same default the
+    # installer writes; a device whose config *does* load re-opens it under
+    # the real path in build(), and the buffered events follow it there.
+    event_log.init(
+        Path(os.environ.get("ADNOVA_CACHE_DIR", "/var/lib/adnova-player")) / "logs" / "events.json"
+    )
+    event_log.record("service.boot", "warn", f"Process starting (pid {os.getpid()}).")
+
     try:
         config = load()
     except ConfigError as exc:
@@ -86,6 +101,7 @@ def main() -> int:
         # Otherwise a misconfigured device has nothing safe to do. Exit
         # non-zero so systemd shows it failed rather than looping.
         log.error("Cannot start: %s", exc)
+        event_log.record("service.config_error", "error", str(exc))
         return 2
 
     if not config.trusted_keys:
@@ -93,6 +109,10 @@ def main() -> int:
             "No manifest signing keys are provisioned. Once Dashboard "
             "requires signatures this device will refuse every manifest — "
             "provision ADNOVA_TRUSTED_KEYS before then."
+        )
+        event_log.record(
+            "service.unverified", "security",
+            "No trusted signing keys are provisioned; manifests cannot be verified.",
         )
 
     agent, app = build(config)
@@ -113,8 +133,11 @@ def main() -> int:
 
     # A clean stop on SIGTERM (systemd stop / restart) so the last plan and
     # playback log are flushed rather than torn.
-    def _shutdown(_signum, _frame):
+    def _shutdown(signum, _frame):
         log.info("Shutting down.")
+        # Which signal, because "systemd stopped us" and "something killed us"
+        # are different stories and only the number tells them apart.
+        event_log.record("service.signal", "warn", f"Received signal {signum}; shutting down.")
         watchdog.stop()
         agent.stop()
 
@@ -170,6 +193,11 @@ def _enroll_then_restart(enroll) -> int:
         result = enroller.poll(client)
         if isinstance(result, Adoption):
             log.info("Adopted onto stand %s. Writing credentials.", result.stand_id)
+            event_log.record(
+                "enroll.credentials_written", "security",
+                f"Stand key for stand {result.stand_id} written to the environment file.",
+                ref=result.stand_id,
+            )
             write_credentials(ENV_FILE, result)
             enroller.confirm_claimed(client)
             client.close()
@@ -179,6 +207,10 @@ def _enroll_then_restart(enroll) -> int:
 
         if result == "rejected":
             log.warning("This device was rejected. Waiting in case that changes.")
+            event_log.record(
+                "enroll.rejected", "security",
+                "Dashboard rejected this device's request to join.",
+            )
 
         time.sleep(10)
 

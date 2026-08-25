@@ -35,7 +35,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import diagnostics
+from . import diagnostics, event_log
 from .api import DashboardApi
 from .cache import MediaCache, MediaNeed
 from .capture import ScreenCapture, capture_proof
@@ -71,7 +71,11 @@ class Agent:
         self._cache = cache
         self._playback = playback
         # Important device events, shipped out-of-band after a good heartbeat.
-        self._events = EventLog(self._config.log_dir / "events.json")
+        # Published process-wide as it is built, so the parts of the player
+        # that have no reason to know about the agent — the admin page's login
+        # check, the HTTP client, the enrollment flow — record into the same
+        # chain rather than keeping their own idea of what happened here.
+        self._events = event_log.adopt(EventLog(self._config.log_dir / "events.json"))
         self._screen = screen or Screen()
         # Verified capture (#8/#9/#11): a frame grabber + the feature flag.
         # Off by default; when on, a played slot attaches a screenshot hash.
@@ -226,8 +230,20 @@ class Agent:
         the monotonic schedule-version check, so a stale server_time cannot be
         fed in here to shift the clock backwards.
         """
+        previous = self._clock_offset
         self._clock_skew_seconds = (at - manifest.server_time).total_seconds()
         self._clock_offset = manifest.server_time - at
+
+        # A clock that jumps is either a Pi with no RTC finding its feet (once,
+        # at boot) or something odder. Only a material change is recorded, so
+        # ordinary sub-second drift never reaches the trail.
+        moved = abs((self._clock_offset - previous).total_seconds())
+        if moved >= 60:
+            self._events.record(
+                "clock.corrected", "warn",
+                f"Offset moved by {moved:.0f}s to {self._clock_offset.total_seconds():.0f}s "
+                f"(device is {self._clock_skew_seconds:.0f}s from Dashboard).",
+            )
 
     def _offline_expired(self, manifest: Manifest | None) -> bool:
         """
@@ -337,8 +353,21 @@ class Agent:
         for thread in threads:
             thread.start()
         log.info("Agent started for stand %s.", self._config.stand_id)
+        # Boot and shutdown bracket everything else in the trail. A device
+        # that restarts unexpectedly leaves a start with no matching stop,
+        # which is how a crash-loop or a yanked power lead reads afterwards.
+        self._events.record(
+            "service.started", "warn",
+            f"Player {_version()} up for stand {self._config.stand_id} "
+            f"(chain at seq {self._events.sequence}).",
+        )
 
     def stop(self) -> None:
+        self._events.record("service.stopping", "warn", "Asked to stop.")
+        # One last shipment while the network is still up: the events from the
+        # final minutes are the ones an incident review wants, and holding them
+        # for a restart that may never come loses them.
+        self._safe(self._upload_events, default=None)
         self._stop.set()
 
     def _load_cached_plan(self) -> None:
@@ -651,8 +680,25 @@ class Agent:
             "stand_id": self._config.stand_id,
             "player_version": _version(),
             "batch_id": uuid.uuid4().hex,
+            # The chain head travels with the batch, so Dashboard can tell a
+            # gap ("events 40-58 never arrived") from a quiet device, and a
+            # re-imaged device (new boot_id, seq back to 1) from a wiped one
+            # (same boot_id, seq gone backwards).
+            "boot_id": self._events.boot_id,
+            "sequence": self._events.sequence,
             "events": [
-                {"event_id": e.event_id, "at": e.at, "sev": e.sev, "code": e.code, "detail": e.detail}
+                {
+                    "event_id": e.event_id,
+                    "at": e.at,
+                    "sev": e.sev,
+                    "code": e.code,
+                    "detail": e.detail,
+                    "seq": e.seq,
+                    "prev": e.prev,
+                    "hash": e.hash,
+                    "rid": e.rid,
+                    "ref": e.ref,
+                }
                 for e in batch
             ],
         }
@@ -728,6 +774,15 @@ class Agent:
                 continue
 
             if name not in runnable:
+                # A command Dashboard sent that this player has no name for.
+                # Harmless — the map is closed — but a fleet mid-upgrade and a
+                # forged control response look the same from here, so it is on
+                # the record either way.
+                self._events.record(
+                    "command.unknown", "security",
+                    f"Ignored an unrecognised command {str(name)[:40]!r}.",
+                    ref=cid,
+                )
                 continue
 
             argv, survives = runnable[name]
@@ -737,7 +792,12 @@ class Agent:
                 acks.append({"id": cid, "status": "done", "detail": done_detail["refetch"]})
             elif survives:
                 ok, detail = self._exec(argv)
-                self._events.record("command.executed", "info", name)
+                self._events.record(
+                    "command.executed" if ok else "command.failed",
+                    "warn" if ok else "error",
+                    name if ok else f"{name}: {detail}",
+                    ref=cid,
+                )
                 acks.append({
                     "id": cid,
                     "status": "done" if ok else "error",
@@ -751,8 +811,17 @@ class Agent:
         if acks:
             self._pending_acks.extend(acks)
 
-        for _cid, argv in deferred:
+        for cid, argv in deferred:
             log.info("Running device command: %s", " ".join(argv))
+            # Recorded and shipped *before* the argv runs: a reboot never comes
+            # back to write its own log line, so "the device restarted because
+            # an operator asked it to" has to be told in advance or not at all.
+            self._events.record(
+                "command.executing", "warn",
+                f"{' '.join(argv)[:120]} — the process may not return.",
+                ref=cid,
+            )
+            self._safe(self._upload_events, default=None)
             self._exec(argv)  # from here the process may not return
 
     def _exec(self, argv: list[str]) -> tuple[bool, str]:
@@ -864,6 +933,21 @@ class Agent:
             if not check.ok:
                 level = log.error if check.severity == "critical" else log.warning
                 level("Boot self-test: %s — %s", check.name, check.detail)
+                self._events.record(
+                    "selftest.failed",
+                    "error" if check.severity == "critical" else "warn",
+                    f"{check.name}: {check.detail}",
+                )
+
+        # The trail checks itself while it is at it. A broken chain means a
+        # line on this card was edited or removed since it was written, which
+        # is worth an alert even though Dashboard holds the authoritative copy.
+        ok, broken_at = self._events.verify()
+        if not ok:
+            self._events.record(
+                "audit.chain_broken", "security",
+                f"The local event chain does not verify from seq {broken_at}.",
+            )
         return self._boot_checks
 
     def diagnostics_bundle(self) -> dict:

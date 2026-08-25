@@ -33,6 +33,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from . import event_log
+
 log = logging.getLogger("adnova.trust")
 
 ALGORITHM = "ed25519"
@@ -175,6 +177,12 @@ def _unsigned(reason: str, required: bool) -> Verdict:
         return Verdict(False, reason)
 
     log.warning("%s Accepting it because signatures are not yet required.", reason)
+    # The window between "signing exists" and "signing is required" is the one
+    # moment a forged plan could be accepted. It is a deliberate window, but a
+    # device sitting in it should be visible at Dashboard for as long as it is
+    # — an operator who thinks the fleet is signed and finds this event in the
+    # trail has learned something they needed to know.
+    event_log.record("manifest.unsigned_accepted", "security", reason)
     return Verdict(True, reason)
 
 

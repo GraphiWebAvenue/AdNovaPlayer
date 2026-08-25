@@ -38,6 +38,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from . import event_log
 from .config import is_secure_url
 from .probe import probe_media
 
@@ -139,6 +140,11 @@ class MediaCache:
             log.error(
                 "Refusing %s: media URL is not https (%s).",
                 need.checksum_sha256[:12], urlparse(need.url).scheme or "?",
+            )
+            event_log.record(
+                "media.plaintext_refused", "security",
+                f"{need.checksum_sha256[:12]} was offered over "
+                f"{urlparse(need.url).scheme or '?'}, not https.",
             )
             return False
 
@@ -323,6 +329,15 @@ class MediaCache:
                     "Checksum mismatch for %s: got %s. Discarding.",
                     need.checksum_sha256[:12],
                     actual[:12],
+                )
+                # Bytes that do not match a signed manifest's checksum are, by
+                # definition, bytes somebody substituted — a hijacked origin, a
+                # cache poisoned in the middle, a corrupted CDN object. Never
+                # merely a warning.
+                event_log.record(
+                    "media.checksum_failed", "security",
+                    f"Expected {need.checksum_sha256[:12]}, got {actual[:12]} "
+                    f"({total} bytes). Discarded.",
                 )
                 return False
 

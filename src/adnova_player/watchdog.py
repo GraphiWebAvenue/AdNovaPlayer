@@ -27,6 +27,8 @@ import threading
 import time
 from collections.abc import Callable
 
+from . import event_log
+
 log = logging.getLogger("adnova.watchdog")
 
 
@@ -73,6 +75,9 @@ class Watchdog:
         self._interval = interval_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Edge-triggered: a stall lasts until the restart, and one event is
+        # the record of it. Repeating it every 25s would bury the cause.
+        self._stalled = False
 
     def start(self) -> None:
         if not os.environ.get("NOTIFY_SOCKET"):
@@ -88,10 +93,17 @@ class Watchdog:
         while not self._stop.wait(self._interval):
             if self._is_live():
                 _notify("WATCHDOG=1")
-            else:
-                # Deliberately silent: let the ping lapse so systemd
-                # restarts us. Say why, once it is noticed in the log.
+            elif not self._stalled:
+                # Deliberately silent to systemd: let the ping lapse so it
+                # restarts us. Loud everywhere else, and only on the edge —
+                # the restart is seconds away, so the record has one chance
+                # to be written and shipped before the process is replaced.
+                self._stalled = True
                 log.error("Liveness check failed; withholding the watchdog ping.")
+                event_log.record(
+                    "watchdog.stalled", "error",
+                    "The agent's loops stopped making progress; letting systemd restart us.",
+                )
 
 
 def monotonic() -> float:
