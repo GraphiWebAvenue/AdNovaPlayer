@@ -1275,7 +1275,20 @@ class Agent:
             "stand_id": self._config.stand_id,
             "player_version": _version(),
             "schedule_version": version,
-            "current_slot_id": current.slot_id if current and not current.is_fallback else None,
+            # Only a REAL schedule slot belongs here. The fallback (-1), a test
+            # broadcast and an emergency takeover (both -2) are synthetic items
+            # with no row behind them, and sending their sentinel id was not
+            # merely untidy: Dashboard's column is unsigned, so every heartbeat
+            # carrying -2 was rejected outright — and because the whole request
+            # died with it, the control channel died too. Commands were never
+            # delivered for as long as a test or a takeover was on screen,
+            # which looked exactly like a device ignoring every button.
+            # `state` and `test_active` already say what is playing instead.
+            "current_slot_id": (
+                current.slot_id
+                if current is not None and current.slot_id is not None and current.slot_id >= 0
+                else None
+            ),
             "current_ad_id": current.ad_id if current else None,
             "state": "fallback" if (current is None or current.is_fallback) else "playing",
             # Whether a test broadcast is what is actually on the glass right

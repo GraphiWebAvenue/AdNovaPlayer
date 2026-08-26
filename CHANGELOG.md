@@ -1,7 +1,28 @@
 # AdNova Player — Changelog
 
 The Player version tracks the AdNova platform release, in lock-step with the
-Dashboard and AIAgent. All three are **1.8.1**.
+Dashboard and AIAgent. All three are **1.8.2**.
+
+## 1.8.2 — 2026-08-26
+
+Stop sending synthetic slot ids.
+
+The player marks its own invented items with negative sentinels: -1 for the
+bundled fallback loop, -2 for a test broadcast and for an emergency takeover.
+None is a row in any table, and the heartbeat was putting -2 into
+`current_slot_id`, a column Dashboard declares unsigned.
+
+MySQL refused the value, the write threw, and **the entire heartbeat returned
+500** — which meant the command channel never ran. For as long as a test
+broadcast or a takeover was on screen, no queued command was ever handed to
+the device. From Dashboard it looked exactly like a stand ignoring every
+button; the device was healthy and had simply never been told.
+
+Production logs show this firing once a minute, per beat, going back to
+2026-08-16.
+
+Only a real slot id is sent now. `state` and `test_active` already carry what
+is actually on screen, which is what an operator was reading anyway.
 
 ## 1.8.1 — 2026-08-26
 
