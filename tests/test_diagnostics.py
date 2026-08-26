@@ -134,6 +134,34 @@ def test_kiosk_log_tail_is_bounded_and_forgiving(tmp_path):
     assert kiosk_log_tail(str(tmp_path / "nope.log")) == []
 
 
+def test_kiosk_log_tail_picks_the_session_that_tried_most_recently(tmp_path):
+    """
+    There is one log per uid.
+
+    A single fixed name under /tmp let whichever account got there first lock
+    every other account out of the file — which is precisely how a stand lost
+    its screen: a service running as the wrong user created the launcher's
+    lock, and the real launcher could never open it again. Per-uid names
+    removed that trap and made this a glob, so the reader has to pick. The
+    useful one is whichever session last tried to bring the display up.
+    """
+    import os
+
+    from adnova_player.diagnostics import kiosk_log_tail
+
+    stale = tmp_path / "adnova-kiosk-launch.1001.log"
+    stale.write_text("the service account, failing\n", encoding="utf-8")
+    live = tmp_path / "adnova-kiosk-launch.1000.log"
+    live.write_text("the desktop session\n", encoding="utf-8")
+
+    os.utime(stale, (1_000_000, 1_000_000))
+    os.utime(live, (2_000_000, 2_000_000))
+
+    assert kiosk_log_tail(str(tmp_path / "adnova-kiosk-launch.*.log")) == [
+        "the desktop session",
+    ]
+
+
 def test_the_bundle_omits_the_new_fields_when_not_gathered(tmp_path):
     """An older caller's bundle must stay readable, not gain empty keys."""
     checks = run_self_test(

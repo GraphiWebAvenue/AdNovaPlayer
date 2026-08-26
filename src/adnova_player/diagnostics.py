@@ -20,6 +20,7 @@ rather than shipping raw config or logs that might carry a secret.
 
 from __future__ import annotations
 
+import os
 import shutil
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -113,7 +114,11 @@ _SESSION_PROCESSES = {
     "screenshot_uploader": "adnova_player.shots",
 }
 
-KIOSK_LOG = "/tmp/adnova-kiosk-launch.log"
+# The launcher writes one log per uid — a fixed name would let whichever
+# account got there first lock the others out of their own file, which is
+# exactly the trap that once held a stand's screen dark. So this is a glob,
+# and the newest match is the session that last tried to start the display.
+KIOSK_LOG_GLOB = "/tmp/adnova-kiosk-launch.*.log"
 
 
 def session_processes(runner: Callable[[list[str]], bool] | None = None) -> dict[str, bool]:
@@ -148,21 +153,38 @@ def session_processes(runner: Callable[[list[str]], bool] | None = None) -> dict
     return {name: _safely(pattern) for name, pattern in _SESSION_PROCESSES.items()}
 
 
-def kiosk_log_tail(path: str = KIOSK_LOG, lines: int = 40) -> list[str]:
+def kiosk_log_tail(pattern: str = KIOSK_LOG_GLOB, lines: int = 40) -> list[str]:
     """
     The last few lines the display launcher wrote, or [].
 
     The launcher runs in the desktop session and writes to /tmp; the player's
     hardened view of the filesystem is read-only, not private, so it can read
     this even though it could never write it. This is where "no HDMI audio
-    sink found" or "lock held but no mpv driver is running" shows up — the
-    difference between a stand that is dark for a knowable reason and one
-    that is dark for no reason anybody can see.
+    sink found" or "could not open the lock" shows up — the difference between
+    a stand that is dark for a knowable reason and one that is dark for no
+    reason anybody can see.
+
+    The most recently written file wins. There is one per uid, and the
+    interesting one is whichever session last tried to bring the display up.
     """
+    import glob
+
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            # Bounded read: this file is capped at 1 MB by the launcher, and
-            # a diagnostics bundle is not the place to ship all of it.
+        candidates = glob.glob(pattern)
+    except OSError:
+        return []
+    if not candidates:
+        return []
+
+    try:
+        newest = max(candidates, key=lambda p: os.stat(p).st_mtime)
+    except OSError:
+        return []
+
+    try:
+        with open(newest, encoding="utf-8", errors="replace") as f:
+            # Bounded read: the launcher caps each file at 1 MB, and a
+            # diagnostics bundle is not the place to ship all of it.
             return [line.rstrip("\n") for line in f.readlines()[-lines:]]
     except OSError:
         return []

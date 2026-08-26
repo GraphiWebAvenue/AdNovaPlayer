@@ -1,7 +1,65 @@
 # AdNova Player — Changelog
 
 The Player version tracks the AdNova platform release, in lock-step with the
-Dashboard and AIAgent. All three are **1.8.0**.
+Dashboard and AIAgent. All three are **1.8.1**.
+
+## 1.8.1 — 2026-08-26
+
+The actual cause, found on the device.
+
+1.8.0 hardened the display launcher against a failure that turned out not to
+be the one that had taken a stand dark. Running the real diagnosis on the Pi
+produced a better answer, and it is worse than the theory:
+
+**A retired `adnova-kiosk.service` was still installed and enabled.** The
+display was a system unit once, and system units run as the service account.
+That account owns no graphical session, so every start died immediately — but
+not before creating `/tmp/adnova-kiosk.lock`, owned by `adnova`, mode 0644.
+
+From that moment the *real* launcher, running as the desktop user under its
+own Wayland session, could not open that file. `exec 9>` failed, `set -e`
+ended the shell on the redirection error, and the panel stayed black through
+every reboot with nothing written down anywhere. A zero-byte file left by an
+already-broken service held a stand dark indefinitely, while its heartbeats
+kept Dashboard's dot green.
+
+### Every path this script owns is now per-uid
+
+A fixed name under `/tmp` is a cross-user landmine: whichever account creates
+the file first can lock every other account out of it permanently. The lock
+moves to `$XDG_RUNTIME_DIR` — per-user and per-boot by construction, which is
+exactly the scope of "one display for this session" — and the launcher log,
+which the player service must be able to read and so cannot live there, gains
+the uid in its filename. Same for the helper's lock and its `.done` markers.
+`diagnostics.kiosk_log_tail` now globs and reads the most recently written.
+
+### Opening the lock is allowed to fail
+
+It is the failure that cost a stand its screen, so it is now handled rather
+than fatal: log it and carry on without the lock. A second display is a
+visible, fixable annoyance; no display is an outage. The `flock` check is
+skipped entirely when no real lock was obtained — falling back to `/dev/null`
+would risk reading "another launcher owns the screen" and exiting, turning
+the missing lock straight back into the black panel.
+
+### The retired unit is removed fleet-wide
+
+`setup-kiosk.sh` removed it, but only on devices that were re-run through it.
+`provision.sh` and `adnova-update.sh` now both do, on every ops change — the
+only path that reaches a Pi nobody is standing next to. The stale lock files
+go with it.
+
+### `StartLimitIntervalSec` was never in force
+
+It sat in `[Service]`, where systemd ignores it, and said so in the journal on
+every single start:
+
+    Unknown key 'StartLimitIntervalSec' in section [Service], ignoring.
+
+The key belongs to `[Unit]`. So the "never give up restarting" guarantee the
+unit documented was not actually applied — systemd's default rate limit would
+have stopped after five failures in ten seconds and left the stand dead until
+somebody visited it.
 
 ## 1.8.0 — 2026-08-26
 

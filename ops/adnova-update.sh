@@ -58,6 +58,31 @@ fi
 # through the same git channel as the code, with no site visit.
 if ! git diff --quiet "$BEFORE" "$AFTER" -- ops/; then
     blue "ops changed — syncing units, scripts and sudoers"
+
+    # Retire the old system-level kiosk service, on every update, forever.
+    #
+    # setup-kiosk.sh removes this too, but only devices that were re-run
+    # through it ever got that — and one that was not spent every boot in
+    # the following state: the unit starts the display launcher as the
+    # *service* account, which owns no graphical session, so it dies. On its
+    # way out it leaves /tmp/adnova-kiosk.lock owned by that account, and
+    # from then on the real launcher (running as the desktop user, which is
+    # a different uid) cannot open the file at all. The panel stays black
+    # through every reboot and nothing anywhere records why.
+    #
+    # The launcher's locks are per-uid now so that trap cannot be set again,
+    # but the unit itself has to go, and this is the only path that reaches
+    # a Pi nobody is standing next to.
+    if systemctl list-unit-files 2>/dev/null | grep -q '^adnova-kiosk\.service'; then
+        blue "removing the retired system-level kiosk service"
+        systemctl disable --now adnova-kiosk.service 2>/dev/null || true
+        rm -f /etc/systemd/system/adnova-kiosk.service
+        # The lock it may have left behind, which is the part that actually
+        # blocks the screen. Safe: nothing legitimate holds a stale one.
+        rm -f /tmp/adnova-kiosk.lock /tmp/adnova-kiosk-helper.lock \
+              /tmp/adnova-kiosk.done /tmp/adnova-screen.done 2>/dev/null || true
+    fi
+
     install -m 644 "$APP/ops/adnova-player.service"     /etc/systemd/system/ || true
     install -m 644 "$APP/ops/adnova-update.service"     /etc/systemd/system/ || true
     install -m 644 "$APP/ops/adnova-update.timer"       /etc/systemd/system/ || true

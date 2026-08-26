@@ -17,14 +17,21 @@
 # Started by adnova-kiosk.sh on every launch; the lock keeps it to one.
 set -u
 
-exec 9>/tmp/adnova-kiosk-helper.lock
+# Per-uid, for the same reason the launcher's lock is: a fixed name under /tmp
+# lets whichever account gets there first lock every other account out
+# permanently. That is not theoretical — it is how a stand lost its screen.
+UID_N="$(id -u)"
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/adnova-kiosk-helper.$UID_N.lock"
+if ! exec 9>"$LOCK"; then
+    exec 9>/dev/null   # no lock available; one helper is better than none
+fi
 flock -n 9 || exit 0
 
 # The request is written by the player in the one dir it may write to; the
 # .done marker is ours to write, so it lives in our own /tmp (writable for the
 # desktop user — the read-only /tmp was only the player's hardened view).
 KIOSK_REQ="/var/lib/adnova-player/ipc/restart-kiosk.req"
-KIOSK_DONE="/tmp/adnova-kiosk.done"
+KIOSK_DONE="/tmp/adnova-kiosk.$UID_N.done"
 KIOSK="$(dirname "$0")/adnova-kiosk.sh"
 
 # Manual screen-power override from Dashboard (screen_on / screen_off command).
@@ -32,7 +39,7 @@ KIOSK="$(dirname "$0")/adnova-kiosk.sh"
 # autonomous operating-hours logic still runs, so this is a momentary override
 # that the hours schedule reasserts on its next cycle — which is the intent.
 SCREEN_REQ="/var/lib/adnova-player/ipc/screen.req"
-SCREEN_DONE="/tmp/adnova-screen.done"
+SCREEN_DONE="/tmp/adnova-screen.$UID_N.done"
 
 set_screen() {
     # $1 = on|off. Try the Pi's own HDMI power first (no compositor needed),

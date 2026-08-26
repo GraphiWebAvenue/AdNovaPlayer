@@ -216,6 +216,21 @@ install -m 0440 "$SUDO_TMP" /etc/sudoers.d/adnova-player
 rm -f "$SUDO_TMP"
 
 # ── Services ────────────────────────────────────────────────────────────
+
+# The display is never a system service. It needs the desktop user's Wayland
+# session, and a system unit runs as the service account, which has none —
+# so it dies on every start and leaves a lock behind that blocks the real,
+# session-owned launcher from ever opening the screen. A stand in that state
+# reboots into a black panel indefinitely while its heartbeats look perfect.
+# Remove any such unit still present from an older install.
+if systemctl list-unit-files 2>/dev/null | grep -q '^adnova-kiosk\.service'; then
+    blue "removing the retired system-level kiosk service"
+    systemctl disable --now adnova-kiosk.service 2>/dev/null || true
+    rm -f /etc/systemd/system/adnova-kiosk.service
+    rm -f /tmp/adnova-kiosk.lock /tmp/adnova-kiosk-helper.lock \
+          /tmp/adnova-kiosk.done /tmp/adnova-screen.done 2>/dev/null || true
+fi
+
 blue "installing the services"
 install -m 644 "$BASE/current/ops/adnova-player.service"     /etc/systemd/system/
 install -m 644 "$BASE/current/ops/adnova-update.service"     /etc/systemd/system/

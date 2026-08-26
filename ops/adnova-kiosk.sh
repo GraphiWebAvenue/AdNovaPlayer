@@ -22,19 +22,46 @@
 # failures that DO matter are handled where they happen; see the mpv check.
 set -uo pipefail
 
-# Every launch leaves a trail. The player service can read this file — its
-# hardened view of /tmp is read-only, not private — and ships the tail of it
-# in the diagnostics bundle, so "the display never came up and nobody
-# noticed" stops being a state this fleet can be in.
-LOG=/tmp/adnova-kiosk-launch.log
+# Every path this script owns carries the uid of whoever is running it.
+#
+# This is not tidiness. A fixed name under /tmp is a cross-user landmine: a
+# stale system-level adnova-kiosk.service, running as the service account,
+# created /tmp/adnova-kiosk.lock owned by `adnova` with mode 0644 — and from
+# that moment the real launcher, running as the desktop user, could not open
+# it. `exec 9>` failed, the shell died on the redirection, and the panel
+# stayed black through every reboot with nothing logged anywhere. One
+# zero-byte file, left by a service that was itself already broken, held a
+# stand dark indefinitely. Per-uid names mean one account can no longer lock
+# another one out of its own screen.
+UID_N="$(id -u)"
+
+# The lock belongs in the session's own runtime dir when there is one: it is
+# per-user and per-boot by construction, which is exactly the scope of "one
+# display for this session". /tmp is the fallback for a session without it.
+RUNDIR="${XDG_RUNTIME_DIR:-/tmp}"
+LOCK="$RUNDIR/adnova-kiosk.$UID_N.lock"
+
+# The log cannot follow it there: XDG_RUNTIME_DIR is mode 0700 and the player
+# service runs as a different user, so it could never read it. /tmp keeps it
+# world-readable — the player's hardened view of /tmp is read-only, not
+# private — and the tail of it rides the diagnostics bundle, so "the display
+# never came up and nobody noticed" stops being a state this fleet can be in.
+LOG="/tmp/adnova-kiosk-launch.$UID_N.log"
+
 if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1000000 ]; then
-    : >"$LOG"
+    : >"$LOG" 2>/dev/null || true
+fi
+
+# Never die trying to open the log. Losing the trail is bad; losing the screen
+# because we could not write about it would be absurd.
+if ! : >>"$LOG" 2>/dev/null; then
+    LOG=/dev/null
 fi
 exec 2>>"$LOG"
-log() { printf '%s %s\n' "$(date -Is 2>/dev/null || date)" "$*" >>"$LOG"; }
+log() { printf '%s %s\n' "$(date -Is 2>/dev/null || date)" "$*" >>"$LOG" 2>/dev/null || true; }
 trap 'log "launcher exited (status $?)"' EXIT
 
-log "starting as $(id -un) — session ${WAYLAND_DISPLAY:-none}"
+log "starting as $(id -un) (uid $UID_N) — session ${WAYLAND_DISPLAY:-none}"
 
 # One display only. setup-kiosk registers this launcher in more than one
 # place (labwc autostart, wayfire, XDG), so a session that honours two of
@@ -42,8 +69,22 @@ log "starting as $(id -un) — session ${WAYLAND_DISPLAY:-none}"
 # the extra launch exit at once; the fd is inherited across the exec below, so
 # it is held for the life of the driver and freed the instant it is killed —
 # exactly what a remote restart needs.
-exec 9>/tmp/adnova-kiosk.lock
-if ! flock -n 9; then
+#
+# Opening it is itself allowed to fail. That is the failure that cost a stand
+# its screen, and a redirection error would otherwise end this shell on the
+# spot with nothing written down. Say so, and carry on without the lock — a
+# second display is a visible, fixable annoyance; no display is an outage.
+HAVE_LOCK=1
+if ! exec 9>"$LOCK"; then
+    log "WARNING could not open $LOCK — continuing without the single-instance lock"
+    HAVE_LOCK=0
+fi
+
+# Only consult the lock when we actually hold a real one. Falling back to
+# flock on /dev/null would be worse than useless: if it failed we would read
+# it as "another launcher owns the screen" and exit, turning the missing lock
+# straight back into the black panel this whole change exists to prevent.
+if [ "$HAVE_LOCK" = 1 ] && ! flock -n 9; then
     # Usually this is the duplicate autostart entry doing its job. But a lock
     # held while NO driver runs means a wedged launcher from an earlier
     # session is blocking the screen — indistinguishable from the outside,

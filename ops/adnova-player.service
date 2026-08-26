@@ -4,6 +4,16 @@ Documentation=https://github.com/GraphiWebAvenue/AdNovaPlayer
 After=network-online.target
 Wants=network-online.target
 
+# Never give up restarting. systemd's default start-rate limit would stop
+# trying after five failures in ten seconds and leave the stand dead until
+# somebody visited it — the opposite of what an unattended device needs.
+#
+# This lived in [Service] until v1.8.0, where systemd ignores it: the key
+# belongs to [Unit], and every start logged
+# "Unknown key 'StartLimitIntervalSec' in section [Service], ignoring."
+# So the protection that was written down was never actually in force.
+StartLimitIntervalSec=0
+
 [Service]
 # notify, not exec: the player sends READY=1 once its loops are running,
 # so systemd knows the difference between "process started" and "actually
@@ -29,7 +39,6 @@ ExecStart=/opt/adnova-player/venv/bin/python -m adnova_player.main
 # avoid a tight crash-spin.
 Restart=always
 RestartSec=3
-StartLimitIntervalSec=0
 
 # ── systemd software watchdog ───────────────────────────────────────────
 #
