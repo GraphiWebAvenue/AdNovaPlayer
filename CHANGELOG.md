@@ -1,7 +1,41 @@
 # AdNova Player — Changelog
 
 The Player version tracks the AdNova platform release, in lock-step with the
-Dashboard and AIAgent. All three are **1.8.2**.
+Dashboard and AIAgent. All three are **1.8.3**.
+
+## 1.8.3 — 2026-08-26
+
+The buttons could never have worked.
+
+`sudo` is setuid. `adnova-player.service` set `NoNewPrivileges=true`, which
+forbids exactly that escalation. So every invocation in the sudoers rule —
+restart, reboot, shutdown, update, os_update, which is every command that
+touches the system — failed at the first syscall, on every device, in every
+release that had both. The device said so plainly each time:
+
+    sudo: The "no new privileges" flag is set, which prevents sudo from
+    running as root.
+
+Nobody read it, because `update` and `os_update` were the only two that
+reported an outcome at all; restart, reboot and shutdown are deferred and
+never acked by design ("the process is gone before it could"), so they sat at
+`sent` forever and looked like a device ignoring its operator.
+
+Two pieces of hardening written against each other. The sudoers allow-list is
+the one that was designed — five exact systemctl invocations, no wildcard,
+reasoned about in its own file — so that list is the escalation boundary and
+the flag goes. Everything else in the hardening block stays, including
+`RestrictSUIDSGID`, which stops the process *creating* setuid files and is the
+part that actually matters for something parsing untrusted media.
+
+`tests/test_ops_units.py` now reads the unit file and the sudoers template and
+fails if they contradict each other, or if the player runs a sudo command the
+rule does not grant. Neither file is code, so nothing had an opinion about
+them before.
+
+The fleet repairs itself: `adnova-update.timer` runs as root and never needed
+sudo, so it installs the corrected unit, reloads systemd and restarts the
+player without anyone pressing the button that could not work.
 
 ## 1.8.2 — 2026-08-26
 

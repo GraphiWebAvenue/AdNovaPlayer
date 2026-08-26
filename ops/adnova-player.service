@@ -62,7 +62,38 @@ MemoryMax=256M
 TasksMax=64
 
 # ── Hardening ───────────────────────────────────────────────────────────
-NoNewPrivileges=true
+#
+# NoNewPrivileges is deliberately NOT set, and that needs explaining because
+# it looks like an omission.
+#
+# `sudo` is setuid. NoNewPrivileges=true forbids exactly that escalation, so
+# with it set every one of the five invocations in
+# ops/sudoers-adnova-player.template is impossible — the player asks, and sudo
+# answers:
+#
+#     sudo: The "no new privileges" flag is set, which prevents sudo from
+#     running as root.
+#
+# Which meant restart, reboot, shutdown, update and os_update — every command
+# that touches the system — could never work, on any device, in any release.
+# The buttons queued, the device received them, and each one failed at the
+# first syscall. Two pieces of hardening written against each other, and the
+# sudoers allow-list is the one that was designed: a closed list of five exact
+# systemctl invocations, no wildcard, reasoned about in its own file.
+#
+# So the escalation boundary is that allow-list, not this flag. The worst it
+# hands a compromised player is the ability to restart, reboot or power off
+# the one device it already runs on — which is the trade the sudoers rule
+# states outright.
+#
+# Everything else below stays. RestrictSUIDSGID keeps the process from
+# *creating* setuid files, which is the part that actually matters for a
+# process that parses untrusted media; it does not block running sudo.
+#
+# The stricter alternative — keep NoNewPrivileges and have a root-side path
+# unit watch a request file, the way the kiosk helper already works — is the
+# better long-term shape and is worth doing deliberately rather than as a
+# hotfix.
 ProtectSystem=strict
 # The one place it may write: the media cache and logs.
 ReadWritePaths=/var/lib/adnova-player
