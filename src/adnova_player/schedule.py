@@ -172,7 +172,14 @@ class Schedule:
         # A live takeover wins over everything, including a scheduled
         # urgent slot. It is the one thing an operator reaches for when the
         # screen must say something *now*.
-        if self._emergency is not None:
+        #
+        # But only while its media can actually be shown. Media can be
+        # quarantined by the decode probe after the takeover was installed, and
+        # returning it anyway would hand the driver a file it cannot render —
+        # a black screen, from the one control whose entire purpose is to put
+        # something in front of people. Everything else here already falls
+        # through to the loop rather than to black; so does this now.
+        if self._emergency is not None and self._playable(self._emergency):
             return self._emergency
 
         # Out of contact too long: the cached plan has outlived the window it
@@ -312,6 +319,25 @@ class Schedule:
             label=candidate.label,
             loop=True,
         )
+
+    def _playable(self, item: PlayItem) -> bool:
+        """
+        Can this already-built item actually be rendered?
+
+        The synthetic items — the takeover, a test, the bundled loop — arrive
+        as PlayItems rather than slots, so `_resolve` never sees them and the
+        cache's playability gate never applied. Their media is named by the
+        checksum embedded in `local_src` (`/media/<sha256>`), which is what
+        this reads back. Anything not shaped that way — the bundled fallback's
+        `/fallback` — is served by us directly and is always playable.
+        """
+        prefix = self._cache.local_url_path("")
+        if not item.local_src.startswith(prefix):
+            return True
+
+        checksum = item.local_src[len(prefix):]
+
+        return checksum == "" or self._cache.is_playable(checksum)
 
     def _resolve(self, slot: Slot) -> PlayItem | None:
         """A slot becomes a PlayItem only if its media is cached and valid."""

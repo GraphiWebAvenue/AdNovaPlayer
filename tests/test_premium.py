@@ -123,17 +123,73 @@ def _now():
     return datetime.now(tz=UTC)
 
 
+def _cache_a_file(cache, payload=b"takeover-bytes") -> str:
+    """Put real, checksum-matching bytes in the cache and return the checksum."""
+    import hashlib
+
+    checksum = hashlib.sha256(payload).hexdigest()
+    cache.path_for(checksum).parent.mkdir(parents=True, exist_ok=True)
+    cache.path_for(checksum).write_bytes(payload)
+
+    return checksum
+
+
 def test_schedule_layers_a_takeover_without_mutating_the_plan(tmp_path):
     from adnova_player.schedule import PlayItem
 
     cache = MediaCache(tmp_path / "media")
     base = Schedule(None, cache)
 
-    takeover = PlayItem(-2, None, "image", "/media/x", True, 30, "urgent")
+    # Real cached bytes. This test used to name a file that was never cached
+    # and still expect it on screen, which quietly asserted the bug below.
+    checksum = _cache_a_file(cache)
+    takeover = PlayItem(
+        -2, None, "image", cache.local_url_path(checksum), True, 30, "urgent",
+    )
     layered = Schedule(base.manifest, cache, emergency=takeover)
 
     assert layered.now_playing(_now()).slot_id == -2
     assert base.now_playing(_now()).is_fallback  # the base is untouched
+
+
+def test_a_takeover_whose_media_cannot_play_falls_back_instead_of_going_black(tmp_path):
+    """
+    The one control whose entire purpose is to put something in front of
+    people must never be the thing that blanks the screen.
+
+    Media can be quarantined by the decode probe after the takeover was
+    installed. Returning it anyway hands the driver a file it cannot render,
+    and the panel goes black — and stays black, because from Dashboard the
+    takeover looks like it is running perfectly.
+    """
+    from adnova_player.schedule import PlayItem
+
+    cache = MediaCache(tmp_path / "media")
+    checksum = _cache_a_file(cache)
+    takeover = PlayItem(
+        -2, None, "video", cache.local_url_path(checksum), True, 30, "urgent",
+    )
+    layered = Schedule(None, cache, emergency=takeover)
+
+    # While it plays, it wins.
+    assert layered.now_playing(_now()).slot_id == -2
+
+    # The probe then proves the file undecodable. Quarantining is internal to
+    # the cache (probe_cached adds to this set on a decode failure); reaching
+    # in is how the suite simulates a probe result elsewhere too.
+    cache._undecodable.add(checksum)
+
+    assert layered.now_playing(_now()).is_fallback
+
+
+def test_a_takeover_naming_media_that_was_never_cached_is_not_shown(tmp_path):
+    from adnova_player.schedule import PlayItem
+
+    cache = MediaCache(tmp_path / "media")
+    takeover = PlayItem(-2, None, "image", "/media/nothing-here", True, 30, "urgent")
+    layered = Schedule(None, cache, emergency=takeover)
+
+    assert layered.now_playing(_now()).is_fallback
 
 
 # ── Remote commands ─────────────────────────────────────────────────────────

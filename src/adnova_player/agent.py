@@ -1156,8 +1156,22 @@ class Agent:
 
         if not self._cache.has(checksum):
             self._cache.ensure(MediaNeed(url=url, checksum_sha256=checksum))
-        if not self._cache.has(checksum):
-            log.warning("Takeover media could not be cached; not shown.")
+        # is_playable, not has: `has` only asks whether the bytes are on disk
+        # and match their checksum, and says nothing about whether anything
+        # can decode them. A file the probe has quarantined passes `has` and
+        # then shows nothing — which is precisely the black frame the cache's
+        # own contract exists to prevent ("a file proven undecodable behaves
+        # exactly like one still downloading, so the fallback covers its slot
+        # instead of a black frame"). The takeover was the one path that
+        # bypassed it, so the one button an operator reaches for when the
+        # screen MUST say something was also the one that could blank it.
+        if not self._cache.is_playable(checksum):
+            log.warning("Takeover media is not playable; not shown.")
+            self._events.record(
+                "emergency.unplayable", "error",
+                "The takeover media could not be cached or decoded; "
+                "the schedule was left on screen.",
+            )
             return
 
         item = PlayItem(

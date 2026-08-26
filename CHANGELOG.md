@@ -1,7 +1,36 @@
 # AdNova Player — Changelog
 
 The Player version tracks the AdNova platform release, in lock-step with the
-Dashboard and AIAgent. All three are **1.8.3**.
+Dashboard and AIAgent. All three are **1.8.4**.
+
+## 1.8.4 — 2026-08-26
+
+The takeover could blank the screen it exists to fill.
+
+`_apply_emergency` gated on `cache.has()`, which asks only whether the bytes
+are on disk and match their checksum — and says nothing about whether anything
+can decode them. Every other path uses `is_playable()`, whose own contract
+spells out why:
+
+    a file proven undecodable behaves exactly like one still downloading, so
+    the fallback covers its slot instead of a black frame
+
+The takeover was the single path that bypassed it. So the one control an
+operator reaches for when the screen MUST say something was also the only one
+that could turn it black.
+
+`now_playing` returned the takeover unconditionally too, so media quarantined
+*after* the takeover was installed kept being handed to a driver that could
+not render it. Both ends are gated now: at install, and again at resolve, via
+a `_playable` check that reads the checksum back out of the item's own
+`local_src`. A takeover that cannot be shown falls through to the schedule and
+records an `emergency.unplayable` event, rather than showing nothing and
+looking — from Dashboard — like it is running perfectly.
+
+`test_schedule_layers_a_takeover_without_mutating_the_plan` had been asserting
+the bug: it named a file that was never cached and expected it on screen. It
+now uses real cached bytes, and two new tests cover a takeover whose media was
+never cached and one quarantined while it played.
 
 ## 1.8.3 — 2026-08-26
 
