@@ -7,6 +7,17 @@ Dashboard and AIAgent. All three are **1.8.1**.
 
 The actual cause, found on the device.
 
+### The version the fleet reports is now the version it runs
+
+`__version__` is a literal in `__init__.py` and pyproject.toml was bumped
+without it, so devices running 1.8.x kept reporting 1.7.0 — the string the
+heartbeat carries and the fleet view uses to flag a stale stand. An operator
+looking at a stand that had already updated could not tell it apart from one
+that had not. `tests/test_version.py` now fails the build if the two drift,
+which is what makes keeping the literal safe: the venv is an editable install,
+so an importlib.metadata lookup would only refresh when pip re-runs, and a
+value read on every heartbeat must not depend on that.
+
 1.8.0 hardened the display launcher against a failure that turned out not to
 be the one that had taken a stand dark. Running the real diagnosis on the Pi
 produced a better answer, and it is worse than the theory:
