@@ -102,12 +102,81 @@ def failures(checks: list[Check]) -> list[str]:
     return [c.name for c in checks if not c.ok]
 
 
+# The in-session processes that together put pixels on the panel. Named here
+# because "which of these is missing" is the single most useful fact about a
+# misbehaving stand, and the operator has no other way to learn it: the player
+# service can be perfectly healthy while every one of these is gone.
+_SESSION_PROCESSES = {
+    "mpv_driver": "adnova-mpv-driver",
+    "kiosk_launcher": r"adnova-kiosk\.sh",
+    "kiosk_helper": "adnova-kiosk-helper",
+    "screenshot_uploader": "adnova_player.shots",
+}
+
+KIOSK_LOG = "/tmp/adnova-kiosk-launch.log"
+
+
+def session_processes(runner: Callable[[list[str]], bool] | None = None) -> dict[str, bool]:
+    """
+    Which parts of the display stack are actually running.
+
+    Uses pgrep against a closed map of patterns — nothing from the network
+    reaches this. `runner` is injected so the tests can exercise both answers
+    without needing the real processes to exist.
+    """
+    import subprocess
+
+    def _default(argv: list[str]) -> bool:
+        try:
+            return subprocess.run(  # noqa: S603 — fixed argv from a closed map
+                argv, capture_output=True, timeout=5
+            ).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    run = runner or _default
+
+    def _safely(pattern: str) -> bool:
+        # An unanswerable question is answered "not running", never raised.
+        # This bundle is assembled precisely when a stand is already
+        # misbehaving; it must not be the thing that takes the loop down.
+        try:
+            return bool(run(["pgrep", "-f", pattern]))
+        except Exception:  # noqa: BLE001 — see above
+            return False
+
+    return {name: _safely(pattern) for name, pattern in _SESSION_PROCESSES.items()}
+
+
+def kiosk_log_tail(path: str = KIOSK_LOG, lines: int = 40) -> list[str]:
+    """
+    The last few lines the display launcher wrote, or [].
+
+    The launcher runs in the desktop session and writes to /tmp; the player's
+    hardened view of the filesystem is read-only, not private, so it can read
+    this even though it could never write it. This is where "no HDMI audio
+    sink found" or "lock held but no mpv driver is running" shows up — the
+    difference between a stand that is dark for a knowable reason and one
+    that is dark for no reason anybody can see.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            # Bounded read: this file is capped at 1 MB by the launcher, and
+            # a diagnostics bundle is not the place to ship all of it.
+            return [line.rstrip("\n") for line in f.readlines()[-lines:]]
+    except OSError:
+        return []
+
+
 def redacted_bundle(
     *,
     stand_id: int | None,
     player_version: str,
     checks: list[Check],
     health: dict,
+    session: dict[str, bool] | None = None,
+    kiosk_log: list[str] | None = None,
+    display: dict | None = None,
 ) -> dict:
     """
     Assemble the operator's diagnostics bundle — safe to send by construction.
@@ -123,4 +192,10 @@ def redacted_bundle(
         "self_test": [asdict(c) for c in checks],
         "self_test_failures": failures(checks),
         "health": health,
+        # The three things that separate "the brain is fine, the screen is
+        # dead" from every other fault. Absent (not empty) when the caller
+        # did not gather them, so an older bundle stays readable.
+        **({"session": session} if session is not None else {}),
+        **({"kiosk_log": kiosk_log} if kiosk_log is not None else {}),
+        **({"display": display} if display is not None else {}),
     }

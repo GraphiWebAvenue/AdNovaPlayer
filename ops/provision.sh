@@ -201,16 +201,19 @@ EOF
 # ── Limited sudo for the service user ───────────────────────────────────
 #
 # The player runs as the unprivileged adnova user but must be able to
-# restart itself, reboot the board, and trigger its own update — for the
-# remote command menu and for the restart after enrollment. It is granted
-# exactly those three systemctl invocations, spelled out in full with no
-# wildcard, and nothing else. The worst this hands a compromised player is
-# the ability to restart or reboot its own device.
-cat > /etc/sudoers.d/adnova-player <<EOF
-$APP_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart adnova-player, /usr/bin/systemctl reboot, /usr/bin/systemctl start adnova-update.service, /usr/bin/systemctl start --no-block adnova-os-update.service
-EOF
-chmod 0440 /etc/sudoers.d/adnova-player
-visudo -c -f /etc/sudoers.d/adnova-player >/dev/null || die "the sudoers rule failed to validate"
+# restart itself, reboot the board, power it off, and trigger its own update
+# — for the remote command menu and for the restart after enrollment. It is
+# granted exactly those five systemctl invocations, spelled out in full with
+# no wildcard, and nothing else. The worst this hands a compromised player is
+# the ability to restart, reboot or power off its own device.
+#
+# The rule itself lives in ops/sudoers-adnova-player.template — one file, so
+# it can never again drift from the copy the updater lays down.
+SUDO_TMP="$(mktemp)"
+sed "s/@APP_USER@/$APP_USER/" "$BASE/current/ops/sudoers-adnova-player.template" > "$SUDO_TMP"
+visudo -c -f "$SUDO_TMP" >/dev/null || die "the sudoers rule failed to validate"
+install -m 0440 "$SUDO_TMP" /etc/sudoers.d/adnova-player
+rm -f "$SUDO_TMP"
 
 # ── Services ────────────────────────────────────────────────────────────
 blue "installing the services"

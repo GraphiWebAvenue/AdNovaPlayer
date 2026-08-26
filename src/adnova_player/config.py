@@ -102,6 +102,23 @@ class Config:
     # opts in via ADNOVA_VERIFY_CAPTURE at provisioning.
     verify_capture: bool = False
 
+    # ── Display watchdog ────────────────────────────────────────────────
+    #
+    # The player service has Restart=always, a systemd watchdog and the
+    # board's hardware watchdog beneath it. The display stack — the only
+    # part that actually lights the panel — starts from a desktop autostart
+    # hook and had none of that, so a stand could sit dark for weeks while
+    # Dashboard showed it green. These are the escalation thresholds for
+    # noticing that from inside the device.
+    #
+    # Step one asks the in-session helper to relaunch the display, which is
+    # a file write and cannot hurt anything, so it is on by default. Step
+    # two reboots the board — a real intervention on a customer's premises,
+    # so it is a fleet feature flag and defaults OFF, per the Player rules.
+    display_stale_restart_seconds: int = 600
+    display_stale_reboot_seconds: int = 1800
+    display_watchdog_reboot: bool = False
+
     @property
     def manifest_url(self) -> str:
         return f"{self.base_url}/api/v1/player/{self.stand_id}/manifest"
@@ -117,6 +134,10 @@ class Config:
     @property
     def logs_url(self) -> str:
         return f"{self.base_url}/api/v1/player/logs"
+
+    @property
+    def diagnostics_url(self) -> str:
+        return f"{self.base_url}/api/v1/player/diagnostics"
 
     @property
     def screenshot_url(self) -> str:
@@ -174,6 +195,9 @@ def load(env: dict[str, str] | None = None) -> Config:
         local_host=env.get("ADNOVA_LOCAL_HOST", "127.0.0.1"),
         local_port=_int(env, "ADNOVA_LOCAL_PORT", 8080),
         verify_capture=_bool(env, "ADNOVA_VERIFY_CAPTURE", default=False),
+        display_stale_restart_seconds=_int(env, "ADNOVA_DISPLAY_STALE_RESTART_SECONDS", 600),
+        display_stale_reboot_seconds=_int(env, "ADNOVA_DISPLAY_STALE_REBOOT_SECONDS", 1800),
+        display_watchdog_reboot=_bool(env, "ADNOVA_DISPLAY_WATCHDOG_REBOOT", default=False),
     )
 
 

@@ -119,6 +119,31 @@ def _temperature() -> float | None:
     return None
 
 
+def local_ip() -> str | None:
+    """
+    This device's address on the shop's own network, or None.
+
+    Public because two callers need the same answer: enrollment sends it once
+    when the device introduces itself, and the heartbeat now sends it on every
+    beat. Only the first address is taken — `hostname -I` lists every
+    interface, and the first is the one an operator on that network can reach.
+
+    Worth the subprocess once a minute for one reason: a Pi behind a shop's
+    NAT is unreachable from Dashboard, so when a stand has to be visited or
+    tunnelled into, this is the only record of where it actually lives. The
+    address is not a secret in any useful sense — it is an RFC1918 address
+    meaningful only to someone already inside that network.
+    """
+    try:
+        out = subprocess.run(  # noqa: S603,S607 — fixed argv
+            ["hostname", "-I"], capture_output=True, text=True, timeout=3
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    parts = out.stdout.split()
+    return parts[0] if parts else None
+
+
 def _cpu_mem() -> tuple[float | None, float | None]:
     try:
         import psutil

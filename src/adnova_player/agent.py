@@ -41,6 +41,7 @@ from .cache import MediaCache, MediaNeed
 from .capture import ScreenCapture, capture_proof
 from .config import Config
 from .event_log import EventLog
+from .health import local_ip as read_local_ip
 from .health import read as read_health
 from .hours import screen_should_be_on
 from .manifest import Manifest, UntrustedManifest
@@ -157,6 +158,15 @@ class Agent:
         self._display_state_path = os.environ.get(
             "ADNOVA_DISPLAY_STATE", "/var/lib/adnova-player/display.json"
         )
+        # Display watchdog state: when the panel first went dark during hours
+        # it should have been lit, and which escalations have already fired for
+        # this episode. See _check_display_alive. `_display_rebooted` is
+        # deliberately per-process, not per-episode: it is what stops a stand
+        # whose panel is genuinely broken from rebooting itself every half hour
+        # forever.
+        self._display_bad_since: datetime | None = None
+        self._display_restart_asked = False
+        self._display_rebooted = False
 
         # Command outcomes the device has to report on the next heartbeat —
         # {id, status, detail} — so Dashboard shows each one done or failed
@@ -520,6 +530,9 @@ class Agent:
             self._safe(self._heartbeat_once, default=None)
             self._safe(self._upload_playback, default=None)
             self._safe(self._apply_screen_power, default=None)
+            # Runs after the beat, so its escalations ride the next one and
+            # Dashboard learns why a stand relaunched or rebooted itself.
+            self._safe(self._check_display_alive, default=None)
             # Free media that has already aired, every beat — so played
             # files are gone within ~a heartbeat even while offline, and the
             # card never fills with content that will not play again.
@@ -620,6 +633,102 @@ class Agent:
 
         local_now = datetime.now(tz=zone)
         self._screen.apply(screen_should_be_on(hours, local_now))
+
+    def _check_display_alive(self) -> None:
+        """
+        Notice a panel that has gone dark, and do something about it.
+
+        Everything else in this system watches the brain. `Restart=always`,
+        the systemd watchdog and the board's hardware watchdog all guard the
+        Python process — which can be perfectly healthy while the screen it
+        exists to fill has shown nothing for a week. The display stack starts
+        from a desktop autostart hook, so nothing restarts it and nothing
+        reports it; Dashboard sees heartbeats and calls the stand online.
+
+        This closes that loop from inside the device, because it is the only
+        vantage point that can: Dashboard cannot reach a Pi behind a shop's
+        NAT, and the operator cannot see the panel.
+
+        Two steps, deliberately far apart in consequence. Asking the
+        in-session helper to relaunch the display is a file write and costs
+        nothing if it was a false alarm. Rebooting the board is a real
+        intervention on someone's premises, so it is a fleet flag that
+        defaults off and fires at most once per boot — a watchdog that can
+        reboot-loop a stand is worse than the fault it was meant to fix.
+        """
+        # Only judge the panel when something should actually be on it. Outside
+        # operating hours the screen is off on purpose, and a device with no
+        # plan yet has nothing to show — neither is a fault.
+        with self._lock:
+            hours = self._operating_hours
+            tzname = self._timezone
+            has_plan = self._current is not None
+
+        try:
+            zone = ZoneInfo(tzname)
+        except Exception:  # noqa: BLE001 — an unknown zone must not stop the loop
+            zone = ZoneInfo("UTC")
+
+        if not has_plan or not screen_should_be_on(hours, datetime.now(tz=zone)):
+            self._display_bad_since = None
+            return
+
+        display = self._read_display_health()
+        reported_at = display.get("at") if display else None
+        fresh = False
+        if isinstance(reported_at, int | float):
+            # The driver stamps `at` each tick. Two heartbeats of slack, so a
+            # slow beat or a driver mid-reload is never mistaken for a dead one.
+            age = datetime.now(tz=UTC).timestamp() - float(reported_at)
+            fresh = age < max(120.0, self._config.heartbeat_seconds * 2)
+
+        if fresh and display.get("playing"):
+            if self._display_bad_since is not None:
+                self._events.record(
+                    "display.recovered", "info",
+                    "The panel is playing again.",
+                )
+            self._display_bad_since = None
+            self._display_restart_asked = False
+            return
+
+        now = self._now()
+        if self._display_bad_since is None:
+            self._display_bad_since = now
+            return
+
+        dark_for = (now - self._display_bad_since).total_seconds()
+
+        if (
+            not self._display_restart_asked
+            and dark_for >= self._config.display_stale_restart_seconds
+        ):
+            self._display_restart_asked = True
+            ok, detail = self._request_kiosk_restart()
+            self._events.record(
+                "display.stalled", "error",
+                f"Nothing on the panel for {int(dark_for)}s; "
+                f"asked for a display restart ({detail}).",
+            )
+            log.warning("Display stale for %ss — requested a relaunch.", int(dark_for))
+            if not ok:
+                return
+
+        if (
+            self._config.display_watchdog_reboot
+            and not self._display_rebooted
+            and dark_for >= self._config.display_stale_reboot_seconds
+        ):
+            self._display_rebooted = True
+            self._events.record(
+                "display.reboot", "error",
+                f"Panel dark for {int(dark_for)}s after a relaunch attempt; "
+                "rebooting the board.",
+            )
+            # Shipped before the argv runs: a reboot never returns to write
+            # its own log line. Same reasoning as _run_commands' deferred set.
+            self._safe(self._upload_events, default=None)
+            self._exec(["sudo", "-n", "systemctl", "reboot"])
 
     def _heartbeat_once(self) -> None:
         body = self._heartbeat_body()
@@ -768,6 +877,15 @@ class Agent:
                 ok, detail = self._request_kiosk_restart()
                 acks.append({"id": cid, "status": "done" if ok else "error", "detail": detail})
                 continue
+            # The safe answer to "let me SSH in and look". Everything an
+            # operator would run by hand — which parts of the display stack
+            # are up, what the launcher logged, what is really on the panel —
+            # gathered here and posted back, with no shell anywhere in the
+            # path and no secret in the payload.
+            if name == "diagnostics":
+                ok, detail = self._send_diagnostics()
+                acks.append({"id": cid, "status": "done" if ok else "error", "detail": detail})
+                continue
             if name in ("screen_on", "screen_off"):
                 ok, detail = self._request_screen(name == "screen_on")
                 acks.append({"id": cid, "status": "done" if ok else "error", "detail": detail})
@@ -890,6 +1008,28 @@ class Agent:
         """
         return True, "the device uploads a screenshot automatically every ~30s"
 
+    def _send_diagnostics(self) -> tuple[bool, str]:
+        """Gather the bundle and post it. Never raises; the ack carries the outcome."""
+        try:
+            bundle = self.diagnostics_bundle()
+        except Exception as exc:  # noqa: BLE001 — a diagnostics read must not kill the beat
+            log.warning("Could not assemble the diagnostics bundle: %s", exc)
+            return False, f"could not gather diagnostics: {str(exc)[:120]}"
+
+        body = {
+            "contract_version": "player_diagnostics.v1",
+            "stand_id": self._config.stand_id,
+            "player_version": _version(),
+            "bundle": bundle,
+        }
+        if self._api.send_diagnostics(body) is None:
+            return False, "diagnostics gathered but the upload failed"
+
+        down = [name for name, up in bundle.get("session", {}).items() if not up]
+        if down:
+            return True, "Diagnostics sent. Not running: " + ", ".join(sorted(down)) + "."
+        return True, "Diagnostics sent; the whole display stack is running."
+
     def _request_kiosk_restart(self) -> tuple[bool, str]:
         """Ask the in-session helper to relaunch the display."""
         try:
@@ -961,8 +1101,13 @@ class Agent:
                 "temp_c": health.temp_c,
                 "disk_free_bytes": health.disk_free_bytes,
                 "storage_writable": health.storage_writable,
+                "local_ip": read_local_ip(),
+                "uptime_seconds": int((datetime.now(tz=UTC) - self._boot).total_seconds()),
                 "warnings": health.warnings,
             },
+            session=diagnostics.session_processes(),
+            kiosk_log=diagnostics.kiosk_log_tail(),
+            display=self._read_display_health() or None,
         )
 
     def _handle_auth_lost(self) -> None:
@@ -1155,6 +1300,11 @@ class Agent:
                 round(self._clock_skew_seconds, 1)
                 if self._clock_skew_seconds is not None else None
             ),
+            # Where this device lives on the shop's own network. Dashboard has
+            # always accepted this field and the device never sent it, so the
+            # one address an operator needs to reach a stand was known only for
+            # the few minutes between enrollment and adoption, then lost.
+            "local_ip": read_local_ip(),
             "media_missing_count": 0,
             "pending_log_entries": self._playback.pending(),
             "last_error": "; ".join(health.warnings) or None,

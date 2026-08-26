@@ -126,6 +126,22 @@ class DashboardApi:
             return None
         return _json_or_none(response)
 
+    def send_diagnostics(self, body: dict[str, Any]) -> dict[str, Any] | None:
+        """
+        Upload the redacted diagnostics bundle an operator asked for.
+
+        This is the answer a shell would have given, sent over the channel the
+        device already owns — the Pi sits behind a shop's NAT and nothing can
+        dial in to it, so the only way to learn why a stand is misbehaving is
+        for the stand to look at itself and say. Redacted by construction in
+        diagnostics.redacted_bundle: keys never travel, only whether they are
+        present.
+        """
+        response = self._post(self._config.diagnostics_url, body)
+        if response is None:
+            return None
+        return _json_or_none(response)
+
     def get_screenshot_policy(self) -> dict[str, Any] | None:
         """
         What the operator wants right now: {"mode": "idle"|"once"|"live",

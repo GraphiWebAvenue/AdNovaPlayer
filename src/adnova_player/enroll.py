@@ -29,7 +29,6 @@ import hashlib
 import logging
 import secrets
 import socket
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -232,10 +231,7 @@ def _mac() -> str:
 
 
 def _local_ip() -> str:
-    try:
-        out = subprocess.run(  # noqa: S603,S607 — fixed argv
-            ["hostname", "-I"], capture_output=True, text=True, timeout=3
-        )
-        return out.stdout.split()[0] if out.stdout.split() else ""
-    except (OSError, subprocess.SubprocessError):
-        return ""
+    """The device's LAN address; see health.local_ip, which owns this now."""
+    from .health import local_ip
+
+    return local_ip() or ""

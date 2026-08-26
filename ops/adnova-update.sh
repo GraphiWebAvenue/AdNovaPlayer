@@ -71,8 +71,7 @@ if ! git diff --quiet "$BEFORE" "$AFTER" -- ops/; then
     APP_USER="$(awk -F= '/^User=/{print $2}' "$APP/ops/adnova-player.service" | tr -d '[:space:]')"
     APP_USER="${APP_USER:-adnova}"
     SUDO_TMP="$(mktemp)"
-    printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl restart adnova-player, /usr/bin/systemctl reboot, /usr/bin/systemctl start adnova-update.service, /usr/bin/systemctl start --no-block adnova-os-update.service\n' \
-        "$APP_USER" > "$SUDO_TMP"
+    sed "s/@APP_USER@/$APP_USER/" "$APP/ops/sudoers-adnova-player.template" > "$SUDO_TMP"
     if visudo -c -f "$SUDO_TMP" >/dev/null 2>&1; then
         install -m 0440 "$SUDO_TMP" /etc/sudoers.d/adnova-player || true
     fi

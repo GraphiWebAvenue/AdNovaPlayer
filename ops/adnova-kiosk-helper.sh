@@ -60,9 +60,21 @@ while true; do
         pkill -f 'adnova-mpv-driver' 2>/dev/null || true
         pkill -x mpv 2>/dev/null || true
         pkill -f 'chromium' 2>/dev/null || true
-        sleep 1
-        if [ -f "$KIOSK" ]; then
-            setsid bash "$KIOSK" >/dev/null 2>&1 &
+        sleep 2
+
+        # The launcher supervises the driver now, so killing the driver is
+        # normally the whole job — the supervisor brings it straight back
+        # within a couple of seconds. Only when no supervisor exists at all
+        # is there nothing to do that, and only then do we start one. Testing
+        # for the supervisor rather than the driver matters: right here the
+        # driver is deliberately dead and a healthy supervisor is mid-backoff,
+        # so keying off the driver would kill the very thing about to fix it.
+        # The pattern needs the literal dot — adnova-kiosk-helper.sh (this
+        # script) must never match it.
+        if ! pgrep -f 'adnova-kiosk\.sh' >/dev/null 2>&1; then
+            if [ -f "$KIOSK" ]; then
+                setsid bash "$KIOSK" >/dev/null 2>&1 &
+            fi
         fi
     fi
 

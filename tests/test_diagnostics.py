@@ -76,3 +76,88 @@ def test_the_bundle_carries_the_picture_but_never_a_secret(tmp_path):
     assert "stand_key" not in blob
     assert "ADNOVA_STAND_KEY" not in blob
     assert "a" * 64 not in blob
+
+
+# ── The operational half of the bundle ───────────────────────────────────
+#
+# The self-test says whether the device came up sane. These say whether the
+# screen is actually being driven right now — the fact that separates "the
+# brain is fine, the panel is dead" from every other fault, and the one an
+# operator previously had to SSH in to learn.
+
+
+def test_session_processes_reports_each_part_separately():
+    from adnova_player.diagnostics import session_processes
+
+    # Only the launcher is up: the classic shape of a wedged display stack.
+    def fake_pgrep(argv):
+        return argv[-1] == r"adnova-kiosk\.sh"
+
+    session = session_processes(runner=fake_pgrep)
+
+    assert session["kiosk_launcher"] is True
+    assert session["mpv_driver"] is False
+    assert session["screenshot_uploader"] is False
+
+
+def test_session_processes_survives_a_missing_pgrep():
+    """
+    This bundle is assembled exactly when a stand is already misbehaving, so
+    an unanswerable question has to come back as "not running" rather than as
+    an exception that takes the heartbeat loop with it.
+    """
+    from adnova_player.diagnostics import session_processes
+
+    def explodes(argv):
+        raise OSError("pgrep is not installed")
+
+    session = session_processes(runner=explodes)
+
+    assert set(session) == {
+        "mpv_driver", "kiosk_launcher", "kiosk_helper", "screenshot_uploader",
+    }
+    assert all(up is False for up in session.values())
+
+
+def test_kiosk_log_tail_is_bounded_and_forgiving(tmp_path):
+    from adnova_player.diagnostics import kiosk_log_tail
+
+    log = tmp_path / "kiosk.log"
+    log.write_text("\n".join(f"line {i}" for i in range(200)), encoding="utf-8")
+
+    tail = kiosk_log_tail(str(log), lines=10)
+    assert len(tail) == 10
+    assert tail[-1] == "line 199"
+
+    # A stand whose launcher has never run has no such file, and that is not
+    # an error — it is itself the diagnosis.
+    assert kiosk_log_tail(str(tmp_path / "nope.log")) == []
+
+
+def test_the_bundle_omits_the_new_fields_when_not_gathered(tmp_path):
+    """An older caller's bundle must stay readable, not gain empty keys."""
+    checks = run_self_test(
+        stand_id=3, cache_dir=tmp_path, has_trusted_keys=True, which=ALL_PRESENT,
+    )
+    bundle = redacted_bundle(
+        stand_id=3, player_version="1.2.3", checks=checks, health={},
+    )
+
+    assert "session" not in bundle
+    assert "kiosk_log" not in bundle
+
+
+def test_the_bundle_carries_the_display_picture_when_gathered(tmp_path):
+    checks = run_self_test(
+        stand_id=3, cache_dir=tmp_path, has_trusted_keys=True, which=ALL_PRESENT,
+    )
+    bundle = redacted_bundle(
+        stand_id=3, player_version="1.2.3", checks=checks, health={},
+        session={"mpv_driver": False, "kiosk_helper": False},
+        kiosk_log=["no HDMI audio sink found — continuing on the default sink"],
+        display={"playing": False},
+    )
+
+    assert bundle["session"]["mpv_driver"] is False
+    assert "HDMI" in bundle["kiosk_log"][0]
+    assert bundle["display"]["playing"] is False

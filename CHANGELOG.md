@@ -1,7 +1,93 @@
 # AdNova Player — Changelog
 
 The Player version tracks the AdNova platform release, in lock-step with the
-Dashboard and AIAgent. All three are **1.7.0**.
+Dashboard and AIAgent. All three are **1.8.0**.
+
+## 1.8.0 — 2026-08-26
+
+Something had to watch the screen.
+
+Every safety net in this player guarded the brain. `Restart=always`, the
+systemd watchdog, the board's hardware watchdog — three layers, all around the
+Python process. The display stack that actually puts pixels on the panel
+starts from a desktop autostart hook, has no systemd unit, and had none of
+them. A stand could therefore sit dark for weeks while its heartbeats kept
+arriving and Dashboard showed it green, and nothing anywhere would notice.
+
+That is not hypothetical: it happened, and the cause was one unguarded line.
+
+### The launcher can no longer die in silence
+
+`ops/adnova-kiosk.sh` ran under `set -euo pipefail` with an unguarded
+`sink="$(wpctl status | grep -i hdmi | ...)"`. A stand with no HDMI audio sink
+at autostart — an ordinary race with PipeWire — made that `grep` return 1,
+`pipefail` handed it to the assignment, and `set -e` killed the whole script
+before the helper, the screenshot uploader and mpv were ever started. No error
+reached anywhere, because nothing was watching and nothing was logged.
+
+Three changes, in order of how much they matter:
+
+- **`set -e` is gone**, deliberately. This launcher's one job is to reach mpv;
+  every step before it is a best-effort tweak that must never be able to stop
+  the screen from coming up. The failures that do matter are handled where
+  they happen.
+- **It logs.** `/tmp/adnova-kiosk-launch.log` records every start, every
+  skipped tweak, and every exit with its status. The player's hardened view of
+  `/tmp` is read-only rather than private, so it can read that file and ship
+  the tail of it in the diagnostics bundle.
+- **It supervises the driver** instead of `exec`-ing into it, with a backoff
+  that distinguishes a crash after an hour from a release that cannot start at
+  all. This is the `Restart=always` the display stack never had.
+
+A lock held with no driver behind it — a wedged launcher from an earlier
+session — is now named as such in the log, instead of looking identical to
+the ordinary duplicate-autostart case.
+
+### The device notices its own dark screen
+
+`Agent._check_display_alive` runs on each heartbeat. It judges the panel only
+when something should be on it — inside operating hours, with a plan loaded —
+and it checks the driver's snapshot for freshness, not just its `playing`
+flag: a driver that died leaves its last frame behind saying `playing: true`
+forever.
+
+Two escalations, deliberately far apart in consequence. After
+`display_stale_restart_seconds` (10 min) it asks the in-session helper to
+relaunch the display, which is a file write and costs nothing if it was a
+false alarm. After `display_stale_reboot_seconds` (30 min) it reboots the
+board — a real intervention on a customer's premises, so that step is a fleet
+flag (`ADNOVA_DISPLAY_WATCHDOG_REBOOT`) that defaults **off** and fires at
+most once per process. A watchdog that can reboot-loop a stand is worse than
+the fault it was meant to fix.
+
+### `diagnostics`: the safe answer to "let me SSH in and look"
+
+A Pi sits behind a shop's NAT with no inbound route, so nothing can dial in to
+examine it. The new command has the device examine itself and post the result
+to `POST /api/v1/player/diagnostics`: which parts of the display stack are
+running, the tail of the launcher log, what is really on the panel, and the
+health snapshot. Redacted by construction, as the bundle always was — keys
+never travel, only whether they are present.
+
+Which of the in-session processes are alive is the single most useful fact
+about a misbehaving stand, and until now the only way to learn it was to stand
+next to the device.
+
+### `local_ip` is finally sent
+
+The heartbeat contract has specified this field all along; the device never
+sent it and Dashboard never stored it. So the one address that lets somebody
+reach a stand was known only for the few minutes between enrollment and
+adoption, and then lost. `health.local_ip()` now owns it for both callers.
+
+### `shutdown` works for the first time
+
+The player has always issued `sudo -n systemctl poweroff` for it, and that
+invocation was missing from the sudoers rule, so the command could not have
+worked in any release. The rule now lives in one file —
+`ops/sudoers-adnova-player.template` — rather than as a literal string copied
+into both `provision.sh` and `adnova-update.sh`, which is exactly how the two
+drifted apart in the first place.
 
 ## 1.7.0 — 2026-08-25
 
