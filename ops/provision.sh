@@ -19,10 +19,18 @@ BASE=/opt/adnova-player
 CACHE=/var/lib/adnova-player
 ENV_DIR=/etc/adnova-player
 ENV_FILE="$ENV_DIR/env"
-# The repo is private, reached through the read-only deploy key the
-# bootstrap installed. The `github-player` host alias in root's ssh config
-# points at github.com with that key; auto-update reuses the same remote.
-REPO="git@github-player:GraphiWebAvenue/AdNovaPlayer.git"
+# Public HTTPS, so a freshly flashed Pi can fetch it with no credential at
+# all. That is what lets the one-command installer work: a device that has
+# just been imaged has no deploy key, no ssh config and no way to be given
+# one that would not also have to travel on the SD card — and a fleet-wide
+# key on every card is a worse secret than none.
+#
+# Nothing here is sensitive by design: every credential a device holds is
+# written into /etc/adnova-player/env at provisioning time, root-owned and
+# mode 0600. The code is just code.
+#
+# ADNOVA_REPO overrides it, for a fork or a private mirror.
+REPO="${ADNOVA_REPO:-https://github.com/GraphiWebAvenue/AdNovaPlayer.git}"
 
 blue() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mNOTE:\033[0m %s\n' "$*"; }
@@ -82,6 +90,11 @@ chmod 750 "$ENV_DIR"
 # ── Code ────────────────────────────────────────────────────────────────
 if [ -d "$BASE/current/.git" ]; then
     blue "updating the checkout"
+    # Point an older device at the public remote. It may still carry the ssh
+    # alias from the deploy-key era, which stops working the moment that key
+    # is retired — and a device that cannot fetch cannot update itself out of
+    # any future problem either.
+    git -C "$BASE/current" remote set-url origin "$REPO" 2>/dev/null || true
     git -C "$BASE/current" fetch --quiet origin main
     git -C "$BASE/current" reset --quiet --hard origin/main
 else
@@ -114,8 +127,12 @@ blue "installing dependencies"
 # id and key from the install sheet, the original path.
 if [ -f "$ENV_FILE" ]; then
     blue "environment file already exists — leaving it alone"
-elif [ -n "${ADNOVA_ENROLL_TOKEN:-}" ]; then
-    blue "enrollment mode — this device will adopt itself in Dashboard"
+elif [ -n "${ADNOVA_CLAIM_TOKEN:-}" ] || [ -n "${ADNOVA_ENROLL_TOKEN:-}" ]; then
+    if [ -n "${ADNOVA_CLAIM_TOKEN:-}" ]; then
+        blue "claim mode — this device knows which stand it is"
+    else
+        blue "enrollment mode — this device will adopt itself in Dashboard"
+    fi
 
     # A random admin password for the on-site page, since nobody is here to
     # choose one. It is written to the env, root-only; an operator can set a
@@ -131,11 +148,16 @@ elif [ -n "${ADNOVA_ENROLL_TOKEN:-}" ]; then
 # here automatically on adoption.
 ADNOVA_BASE_URL=${ADNOVA_BASE_URL:-https://dashboard.adnovatech.online}
 ADNOVA_CACHE_DIR=$CACHE
-ADNOVA_ENROLL_TOKEN=$ADNOVA_ENROLL_TOKEN
+ADNOVA_ENROLL_TOKEN=${ADNOVA_ENROLL_TOKEN:-}
+ADNOVA_CLAIM_TOKEN=${ADNOVA_CLAIM_TOKEN:-}
 ADNOVA_ADMIN_USER=admin
 ADNOVA_ADMIN_PASSWORD_HASH=$PASS_HASH
 EOF
-    warn "adopt this device in Dashboard → Devices to finish setup."
+    if [ -n "${ADNOVA_CLAIM_TOKEN:-}" ]; then
+        blue "no adoption step needed — the claim token names the stand."
+    else
+        warn "adopt this device in Dashboard → Devices to finish setup."
+    fi
 else
     blue "let's provision this device"
     echo

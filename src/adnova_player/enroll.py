@@ -59,9 +59,16 @@ class Enroller:
     resumes the same identity rather than starting over as a stranger.
     """
 
-    def __init__(self, base_url: str, fleet_token: str, state_dir: Path) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        fleet_token: str,
+        state_dir: Path,
+        claim_token: str = "",
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._token = fleet_token
+        self._claim = claim_token
         self._id_path = state_dir / "device_id"
         self._secret_path = state_dir / "device_secret"
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -99,6 +106,12 @@ class Enroller:
             "mac": _mac(),
             "local_ip": _local_ip(),
         }
+        # A claim token names the stand up front, so Dashboard adopts this
+        # device immediately instead of parking it in a list for a person to
+        # match against the hardware later. Sent in the body rather than the
+        # header because it is one stand's secret, not the fleet's.
+        if self._claim:
+            body["claim_token"] = self._claim
         try:
             response = client.post(
                 f"{self._base}/api/v1/enroll",
@@ -110,6 +123,22 @@ class Enroller:
             return None
 
         if response.status_code == 403:
+            # With a claim token this is not "come back later" — the token was
+            # refused, and no amount of waiting mends that. Say so plainly:
+            # somebody is standing next to this Pi wondering why nothing
+            # happens, and "closed" would send them looking in the wrong place.
+            if self._claim:
+                detail = ""
+                with contextlib.suppress(Exception):
+                    detail = str((response.json() or {}).get("error", ""))
+                log.error("The claim token was refused: %s", detail or "no reason given")
+                event_log.record(
+                    "enroll.claim_refused", "security",
+                    "Dashboard refused the claim token"
+                    + (f": {detail}" if detail else "")
+                    + ". Download a fresh claim file for this stand.",
+                )
+                return "claim_refused"
             log.info("Enrollment is closed on the server; waiting for it to open.")
             event_log.record("enroll.closed", "info", "Dashboard is not accepting new devices.")
             return "closed"
@@ -124,7 +153,8 @@ class Enroller:
         # device that was adopted against the device that asked.
         event_log.record(
             "enroll.introduced", "warn",
-            f"Introduced {socket.gethostname()} ({_model()}) — Dashboard says {status!r}.",
+            f"Introduced {socket.gethostname()} ({_model()}) — Dashboard says {status!r}"
+            + (" (claimed by provisioning token)." if self._claim else "."),
         )
         return status
 
@@ -194,6 +224,13 @@ def write_credentials(env_path: Path, adoption: Adoption) -> None:
 
     lines["ADNOVA_STAND_ID"] = str(adoption.stand_id)
     lines["ADNOVA_STAND_KEY"] = adoption.stand_key
+
+    # The claim token has done its one job. Dashboard has already marked it
+    # spent, so leaving it here protects nothing and only keeps a dead secret
+    # on disk — and a device that somehow re-entered enrollment would send a
+    # token that can no longer be accepted, which reads as a fault it is not.
+    lines.pop("ADNOVA_CLAIM_TOKEN", None)
+
     if adoption.key_id and adoption.public_key:
         import json
 

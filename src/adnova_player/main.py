@@ -179,8 +179,19 @@ def _enroll_then_restart(enroll) -> int:
     splash = _splash_server(splash_cache, enroll)
     threading.Thread(target=splash, daemon=True).start()
 
-    enroller = Enroller(enroll.base_url, enroll.token, enroll.cache_dir / "enroll")
+    enroller = Enroller(
+        enroll.base_url,
+        enroll.token,
+        enroll.cache_dir / "enroll",
+        claim_token=enroll.claim_token,
+    )
     client = enroller.client()
+
+    # A refused claim token is the one enrollment failure that retrying cannot
+    # mend — the token is spent, revoked, or expired, and only a fresh claim
+    # file fixes it. Logged loudly on a slow backoff rather than silently every
+    # ten seconds, so the journal a technician reads says what to do.
+    refusals = 0
 
     introduced = False
     while True:
@@ -189,6 +200,17 @@ def _enroll_then_restart(enroll) -> int:
             introduced = status in ("pending", "approved")
             if status == "closed":
                 introduced = False  # keep trying until an admin opens the door
+            if status == "claim_refused":
+                refusals += 1
+                log.error(
+                    "The claim file on this device is no longer valid. Download a "
+                    "fresh one from Dashboard (the stand -> Provision a device), "
+                    "put it on the boot partition, and re-run the installer. "
+                    "Refusal #%d.",
+                    refusals,
+                )
+                time.sleep(min(60 * refusals, 900))
+                continue
 
         result = enroller.poll(client)
         if isinstance(result, Adoption):

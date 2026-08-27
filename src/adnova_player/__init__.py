@@ -5,4 +5,4 @@
 # on purpose: the venv is an editable install, so metadata only refreshes when
 # pip re-runs, and a version this fleet reads on every heartbeat must not
 # depend on that having happened.
-__version__ = "1.8.4"
+__version__ = "1.9.0"

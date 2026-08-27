@@ -42,20 +42,30 @@ class Enrollment:
     cache_dir: Path
     local_host: str
     local_port: int
+    # A claim token names the stand this device is for. It arrives on the SD
+    # card, minted by an operator against one stand, so a device carrying one
+    # needs no adoption step — it was invited by name. Empty on the older
+    # fleet-token path, where a device knocks anonymously and is adopted after.
+    claim_token: str = ""
+
+    @property
+    def is_claim(self) -> bool:
+        return bool(self.claim_token)
 
 
 def enrollment(env: dict[str, str] | None = None) -> Enrollment | None:
     """
-    What a device with no stand key needs to introduce itself, or None if
-    it was not imaged for enrollment (no fleet token).
+    What a device with no stand key needs to introduce itself, or None if it
+    was not imaged for enrollment (neither kind of token).
 
     Read separately from the full config because it must work in exactly
     the state the full config refuses to load — a device with no stand key
     yet. That is the whole point of enrollment.
     """
     env = env if env is not None else dict(os.environ)
+    claim = env.get("ADNOVA_CLAIM_TOKEN", "").strip()
     token = env.get("ADNOVA_ENROLL_TOKEN", "").strip()
-    if not token:
+    if not claim and not token:
         return None
 
     return Enrollment(
@@ -64,6 +74,7 @@ def enrollment(env: dict[str, str] | None = None) -> Enrollment | None:
         cache_dir=Path(env.get("ADNOVA_CACHE_DIR", "/var/lib/adnova-player")),
         local_host=env.get("ADNOVA_LOCAL_HOST", "127.0.0.1"),
         local_port=_int(env, "ADNOVA_LOCAL_PORT", 8080),
+        claim_token=claim,
     )
 
 
