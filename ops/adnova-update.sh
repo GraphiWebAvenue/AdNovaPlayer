@@ -28,7 +28,18 @@ if [ -n "$(git status --porcelain)" ]; then
     die "working tree is dirty — refusing to update over local changes"
 fi
 
-git fetch --quiet origin main
+# Converge onto the public remote before fetching. Devices provisioned before
+# the repo was public carry an ssh deploy alias; once that key is revoked their
+# fetch fails and they stop updating without saying so — the worst shape a
+# failure can take on a box nobody visits. Rewriting the url here is a no-op on
+# a device that already has it right.
+REPO="${ADNOVA_REPO:-https://github.com/GraphiWebAvenue/AdNovaPlayer.git}"
+if [ "$(git remote get-url origin 2>/dev/null || echo none)" != "$REPO" ]; then
+    blue "pointing origin at $REPO"
+    git remote set-url origin "$REPO" || die "could not set the origin url"
+fi
+
+git fetch --quiet origin main || die "could not reach $REPO — the device stays on its current version"
 BEFORE="$(git rev-parse HEAD)"
 AFTER="$(git rev-parse origin/main)"
 
